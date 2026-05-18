@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'config/jamtime_colors.dart';
-import 'features/launcher/splash_screen.dart';
+import 'features/auth/auth_screen.dart';
 
 class JamTimeApp extends StatelessWidget {
   const JamTimeApp({super.key});
@@ -18,8 +18,7 @@ class JamTimeApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      // Splash, Spotify session varsa otomatik HomeScreen'e geciyor
-      home: const SplashScreen(),
+      home: const AuthScreen(),
     );
   }
 }

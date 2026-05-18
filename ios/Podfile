@@ -41,9 +41,20 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
-    # iOS 14.0 minimum version zorla
     target.build_configurations.each do |config|
+      # iOS 14.0 minimum version zorla
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
+
+      # ────────────────────────────────────────────────────────────
+      # permission_handler iOS preprocessor macros
+      # Her permission AYRICA aktiflestirilmeli, yoksa Permission.X.request()
+      # iOS'ta hicbir sey yapmaz (silently denied doner).
+      # ────────────────────────────────────────────────────────────
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= [
+        '$(inherited)',
+        ## dart: Permission.camera
+        'PERMISSION_CAMERA=1',
+      ]
     end
   end
 end
