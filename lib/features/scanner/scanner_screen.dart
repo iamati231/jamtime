@@ -45,8 +45,9 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      setState(() => _scanState = _ScanState.idle);
-      // Settings'ten donulmus olabilir, izin durumunu yeniden kontrol et
+      // ONEMLI: _scanState'i RESET ETME — bir QR yakalandiysa
+      // Spotify'dan donus sirasinda tekrar tetiklenmesin.
+      // Sadece kamera izni Settings'ten donulmus olabilir, onu kontrol et.
       _refreshPermissionIfMissing();
     }
   }
@@ -66,12 +67,19 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         _connectFailed = false;
       });
 
-      // App Remote bağlantısı kur
-      final connected = await SpotifyAuthService.connect();
+      // KRITIK: Scanner'i hemen durdur ki Spotify'a gecip donulunce
+      // ayni QR tekrar tetiklenmesin (sonsuz dongu fix).
+      try {
+        await _controller.stop();
+      } catch (_) {}
+
+      // Sarki cal — connect() AuthScreen'de yapildi, burada tekrar yapmaya
+      // gerek yok (her connect Spotify app'ini aciyor). Direkt play.
+      final played = await SpotifyAuthService.playTrack(value);
       if (!mounted) return;
 
-      if (!connected) {
-        // Spotify yüklü değil veya giriş yapılmamış
+      if (!played) {
+        // Baglanti dustu/sarki calmadi — kullaniciya bildir
         setState(() {
           _scanState = _ScanState.invalidDetected;
           _connectFailed = true;
@@ -82,13 +90,11 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
             _scanState = _ScanState.idle;
             _connectFailed = false;
           });
+          // Scanner'i tekrar baslat (yeniden denenebilsin)
+          try { await _controller.start(); } catch (_) {}
         }
         return;
       }
-
-      // Çal — müzik 1-2 saniye içinde başlar
-      await SpotifyAuthService.playTrack(value);
-      if (!mounted) return;
 
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const SongModeScreen()),

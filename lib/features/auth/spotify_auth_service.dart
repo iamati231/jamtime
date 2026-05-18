@@ -57,13 +57,27 @@ class SpotifyAuthService {
   }
 
   // ─── Parçayı çal ────────────────────────────────────────────────────────────
-  // QR koddan gelen parçayı çalmak icin kullaniyoruz - pauseAfter=false ile
-  // connect'i sayfayi tasridan onceki adimda guvenli olmasi icin yapiyoruz.
-  static Future<void> playTrack(String spotifyUrl) async {
+  // Cagri sirasinda baglanti dusmusse bir kez reconnect denenir.
+  // Bool: basarili (true) / basarisiz (false).
+  static Future<bool> playTrack(String spotifyUrl) async {
+    final uri = _toUri(spotifyUrl);
+
     try {
-      await SpotifySdk.play(spotifyUri: _toUri(spotifyUrl));
+      await SpotifySdk.play(spotifyUri: uri);
+      return true;
     } catch (e) {
-      debugPrint('[Spotify] play error: $e');
+      debugPrint('[Spotify] play error (first try): $e');
+    }
+
+    // Baglanti dustuyse tek bir reconnect dene (pauseAfter=false — hemen calacak)
+    try {
+      final ok = await connect(pauseAfter: false);
+      if (!ok) return false;
+      await SpotifySdk.play(spotifyUri: uri);
+      return true;
+    } catch (e) {
+      debugPrint('[Spotify] play error (retry): $e');
+      return false;
     }
   }
 

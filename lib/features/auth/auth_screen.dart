@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../config/jamtime_colors.dart';
 import 'spotify_auth_service.dart';
-import '../scanner/scanner_screen.dart';
+import '../home/home_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -25,9 +25,9 @@ class _AuthScreenState extends State<AuthScreen> {
     if (!mounted) return;
 
     if (success) {
-      // Spotify bagli — direkt QR tarama ekranina gec
+      // Spotify bagli — QR Tara butonlu ana ekrana gec
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const ScannerScreen()),
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
       );
     } else {
       setState(() {
