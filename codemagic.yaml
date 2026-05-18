@@ -2,38 +2,40 @@
 # JamTime — Codemagic CI/CD Konfigurasyonu
 # ============================================================
 # Iki workflow:
-#   1) ios-testflight : TestFlight'a yukler (iPhone'a TestFlight app
-#                       uzerinden kurarsiniz)
-#   2) ios-adhoc      : Ad-hoc IPA olusturur (UDID'li cihazlara
-#                       Diawi/AltStore ile direkt kurulur)
+#   1) ios-testflight : TestFlight'a yukler (TestFlight app uzerinden kurulur)
+#   2) ios-adhoc      : Ad-hoc IPA olusturur (Diawi/AltStore ile kurulur)
 #
-# GEREKSINIMLER (Codemagic UI'da set edilecek):
-#   - Teams > Integrations > Developer Portal > App Store Connect
-#     -> "codemagic" adinda API key ekle (Issuer ID + Key ID + .p8)
-#   - App Store Connect'te uygulama olusturulmus olmali:
-#     Bundle ID: com.atamya.jamtime
+# GEREKSINIMLER (Codemagic Application-level Environment Variables):
+#   Group: app_store_credentials (Secret = true)
+#     APP_STORE_CONNECT_PRIVATE_KEY    -> .p8 dosyasinin TUM icerigi
+#     APP_STORE_CONNECT_KEY_IDENTIFIER -> 10 karakterli Key ID
+#     APP_STORE_CONNECT_ISSUER_ID      -> Issuer ID (UUID)
+#   Group: spotify (Secret = true)
+#     SPOTIFY_CLIENT_ID                -> Spotify uygulama client ID
+#
+# App Store Connect:
+#   - Bundle ID: com.atamya.jamtime
+#   - App Apple ID: 6770459105
+#   - TestFlight Internal Tester group: "Internal Testers"
 # ============================================================
 
 workflows:
 
   # ============================================================
-  # 1) TESTFLIGHT WORKFLOW — Internal Tester'lara yayinla
+  # 1) TESTFLIGHT WORKFLOW
   # ============================================================
   ios-testflight:
     name: iOS - TestFlight Deploy
     instance_type: mac_mini_m2
     max_build_duration: 60
 
-    integrations:
-      app_store_connect: codemagic    # Codemagic'te tanimladiginiz API key adi
-
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.atamya.jamtime
+      groups:
+        - app_store_credentials   # APP_STORE_CONNECT_* variables
+        - spotify                 # SPOTIFY_CLIENT_ID
       vars:
         BUNDLE_ID: "com.atamya.jamtime"
-        APP_STORE_APPLE_ID: 6770459105     # App Store Connect uygulama Apple ID
+        APP_STORE_APPLE_ID: 6770459105
       flutter: stable
       xcode: latest
       cocoapods: default
@@ -45,15 +47,10 @@ workflows:
         - pattern: 'main'
           include: true
           source: true
-        - pattern: 'release/*'
-          include: true
-          source: true
 
     scripts:
       - name: Generate spotify_config.dart from env vars
         script: |
-          # Bu dosya .gitignore'da, Codemagic'te env var olarak set edilmis
-          # SPOTIFY_CLIENT_ID kullanilarak runtime'da yaratiliyor.
           mkdir -p lib/config
           cat > lib/config/spotify_config.dart <<EOF
           class SpotifyConfig {
@@ -63,6 +60,20 @@ workflows:
           }
           EOF
           echo "spotify_config.dart created"
+
+      - name: Initialize keychain
+        script: |
+          keychain initialize
+
+      - name: Fetch signing files (auto-create if missing)
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+
+      - name: Add certificates to keychain
+        script: |
+          keychain add-certificates
 
       - name: Set up code signing settings on Xcode project
         script: |
@@ -98,7 +109,9 @@ workflows:
 
     publishing:
       app_store_connect:
-        auth: integration
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
         submit_to_testflight: true
         beta_groups:
           - "Internal Testers"
@@ -113,20 +126,17 @@ workflows:
 
 
   # ============================================================
-  # 2) AD-HOC WORKFLOW — UDID'li cihazlara direkt kurulum
+  # 2) AD-HOC WORKFLOW
   # ============================================================
   ios-adhoc:
     name: iOS - Ad-Hoc IPA
     instance_type: mac_mini_m2
     max_build_duration: 60
 
-    integrations:
-      app_store_connect: codemagic
-
     environment:
-      ios_signing:
-        distribution_type: ad_hoc
-        bundle_identifier: com.atamya.jamtime
+      groups:
+        - app_store_credentials
+        - spotify
       vars:
         BUNDLE_ID: "com.atamya.jamtime"
       flutter: stable
@@ -144,6 +154,20 @@ workflows:
             static const scopes = 'user-read-private app-remote-control streaming';
           }
           EOF
+
+      - name: Initialize keychain
+        script: |
+          keychain initialize
+
+      - name: Fetch ad-hoc signing files
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_ADHOC \
+            --create
+
+      - name: Add certificates to keychain
+        script: |
+          keychain add-certificates
 
       - name: Set up code signing settings on Xcode project
         script: |
