@@ -1,0 +1,175 @@
+# ============================================================
+# JamTime — Codemagic CI/CD Konfigurasyonu
+# ============================================================
+# Iki workflow:
+#   1) ios-testflight : TestFlight'a yukler (iPhone'a TestFlight app
+#                       uzerinden kurarsiniz)
+#   2) ios-adhoc      : Ad-hoc IPA olusturur (UDID'li cihazlara
+#                       Diawi/AltStore ile direkt kurulur)
+#
+# GEREKSINIMLER (Codemagic UI'da set edilecek):
+#   - Teams > Integrations > Developer Portal > App Store Connect
+#     -> "codemagic" adinda API key ekle (Issuer ID + Key ID + .p8)
+#   - App Store Connect'te uygulama olusturulmus olmali:
+#     Bundle ID: com.atamya.jamtime
+# ============================================================
+
+workflows:
+
+  # ============================================================
+  # 1) TESTFLIGHT WORKFLOW — Internal Tester'lara yayinla
+  # ============================================================
+  ios-testflight:
+    name: iOS - TestFlight Deploy
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    integrations:
+      app_store_connect: codemagic    # Codemagic'te tanimladiginiz API key adi
+
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.atamya.jamtime
+      vars:
+        BUNDLE_ID: "com.atamya.jamtime"
+        APP_STORE_APPLE_ID: 0000000000     # TODO: App Store Connect'te app olusturduktan sonra "Apple ID" alanindan al
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+          source: true
+        - pattern: 'release/*'
+          include: true
+          source: true
+
+    scripts:
+      - name: Generate spotify_config.dart from env vars
+        script: |
+          # Bu dosya .gitignore'da, Codemagic'te env var olarak set edilmis
+          # SPOTIFY_CLIENT_ID kullanilarak runtime'da yaratiliyor.
+          mkdir -p lib/config
+          cat > lib/config/spotify_config.dart <<EOF
+          class SpotifyConfig {
+            static const clientId = '$SPOTIFY_CLIENT_ID';
+            static const redirectUrl = 'jamtime://callback';
+            static const scopes = 'user-read-private app-remote-control streaming';
+          }
+          EOF
+          echo "spotify_config.dart created"
+
+      - name: Set up code signing settings on Xcode project
+        script: |
+          xcode-project use-profiles
+
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+
+      - name: Install CocoaPods dependencies
+        script: |
+          find . -name "Podfile" -execdir pod install \;
+
+      - name: Flutter analyze
+        script: |
+          flutter analyze || true
+
+      - name: Flutter build ipa
+        script: |
+          LATEST_BUILD=$(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID" 2>/dev/null || echo "0")
+          BUILD_NUMBER=$(($LATEST_BUILD + 1))
+          echo "Using build number: $BUILD_NUMBER"
+
+          flutter build ipa --release \
+            --build-name=1.0.0 \
+            --build-number=$BUILD_NUMBER \
+            --export-options-plist=/Users/builder/export_options.plist
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - flutter_drive.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        beta_groups:
+          - "Internal Testers"
+        submit_to_app_store: false
+
+      email:
+        recipients:
+          - a.isik@atamya.com
+        notify:
+          success: true
+          failure: true
+
+
+  # ============================================================
+  # 2) AD-HOC WORKFLOW — UDID'li cihazlara direkt kurulum
+  # ============================================================
+  ios-adhoc:
+    name: iOS - Ad-Hoc IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    integrations:
+      app_store_connect: codemagic
+
+    environment:
+      ios_signing:
+        distribution_type: ad_hoc
+        bundle_identifier: com.atamya.jamtime
+      vars:
+        BUNDLE_ID: "com.atamya.jamtime"
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: Generate spotify_config.dart from env vars
+        script: |
+          mkdir -p lib/config
+          cat > lib/config/spotify_config.dart <<EOF
+          class SpotifyConfig {
+            static const clientId = '$SPOTIFY_CLIENT_ID';
+            static const redirectUrl = 'jamtime://callback';
+            static const scopes = 'user-read-private app-remote-control streaming';
+          }
+          EOF
+
+      - name: Set up code signing settings on Xcode project
+        script: |
+          xcode-project use-profiles
+
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+
+      - name: Install CocoaPods dependencies
+        script: |
+          find . -name "Podfile" -execdir pod install \;
+
+      - name: Flutter build ipa (ad-hoc)
+        script: |
+          flutter build ipa --release \
+            --export-options-plist=/Users/builder/export_options.plist
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      email:
+        recipients:
+          - a.isik@atamya.com
+        notify:
+          success: true
+          failure: true
