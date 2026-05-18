@@ -33,7 +33,7 @@ workflows:
         bundle_identifier: com.atamya.jamtime
       vars:
         BUNDLE_ID: "com.atamya.jamtime"
-        APP_STORE_APPLE_ID: 0000000000     # TODO: App Store Connect'te app olusturduktan sonra "Apple ID" alanindan al
+        APP_STORE_APPLE_ID: 6770459105     # App Store Connect uygulama Apple ID
       flutter: stable
       xcode: latest
       cocoapods: default
