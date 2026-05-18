@@ -85,6 +85,10 @@ workflows:
         script: |
           flutter pub get
 
+      - name: Regenerate launcher icons (1024x1024 kare logo)
+        script: |
+          dart run flutter_launcher_icons
+
       - name: Install CocoaPods dependencies
         script: |
           find . -name "Podfile" -execdir pod install \;
@@ -179,6 +183,10 @@ workflows:
       - name: Get Flutter packages
         script: |
           flutter pub get
+
+      - name: Regenerate launcher icons
+        script: |
+          dart run flutter_launcher_icons
 
       - name: Install CocoaPods dependencies
         script: |

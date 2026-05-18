@@ -19,7 +19,7 @@ class ScannerScreen extends StatefulWidget {
 
 class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserver {
   final MobileScannerController _controller = MobileScannerController();
-  bool _hasPermission = false;
+  CameraPermissionResult _permission = CameraPermissionResult.denied;
   _ScanState _scanState = _ScanState.idle;
   bool _connectFailed = false; // bağlantı hata mesajı için
   late final Color _borderColor;
@@ -29,19 +29,32 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _borderColor = JamTimeColors.borderColors[Random().nextInt(JamTimeColors.borderColors.length)];
-    _checkPermission();
+    _requestPermission();
   }
 
-  Future<void> _checkPermission() async {
-    final granted = await PermissionService.requestCamera();
-    if (mounted) setState(() => _hasPermission = granted);
+  Future<void> _requestPermission() async {
+    final result = await PermissionService.requestCamera();
+    if (mounted) setState(() => _permission = result);
+  }
+
+  Future<void> _openSettingsAndRecheck() async {
+    await PermissionService.openSettings();
+    // Settings'ten geri donunce didChangeAppLifecycleState resumed tetiklenecek
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       setState(() => _scanState = _ScanState.idle);
+      // Settings'ten donulmus olabilir, izin durumunu yeniden kontrol et
+      _refreshPermissionIfMissing();
     }
+  }
+
+  Future<void> _refreshPermissionIfMissing() async {
+    if (_permission == CameraPermissionResult.granted) return;
+    final result = await PermissionService.checkCamera();
+    if (mounted) setState(() => _permission = result);
   }
 
   Future<void> _onQrDetected(String value) async {
@@ -105,27 +118,12 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
   @override
   Widget build(BuildContext context) {
-    if (!_hasPermission) {
-      return Scaffold(
-        backgroundColor: JamTimeColors.background,
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Image.asset('assets/images/logo.png', width: 120),
-              const SizedBox(height: 24),
-              const Text(
-                'Kamera izni gerekli',
-                style: TextStyle(color: Colors.white, fontSize: 18),
-              ),
-              const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: _checkPermission,
-                child: const Text('İzin Ver'),
-              ),
-            ],
-          ),
-        ),
+    if (_permission != CameraPermissionResult.granted) {
+      return _PermissionScreen(
+        permission: _permission,
+        onRequest: _requestPermission,
+        onOpenSettings: _openSettingsAndRecheck,
+        onBack: () => Navigator.of(context).pop(),
       );
     }
 
@@ -233,6 +231,114 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
             },
           );
         },
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// IZIN EKRANI
+// ============================================================================
+class _PermissionScreen extends StatelessWidget {
+  final CameraPermissionResult permission;
+  final VoidCallback onRequest;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onBack;
+
+  const _PermissionScreen({
+    required this.permission,
+    required this.onRequest,
+    required this.onOpenSettings,
+    required this.onBack,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Kalici red veya restricted -> sadece Settings'ten cozulebilir
+    final mustOpenSettings = permission == CameraPermissionResult.permanentlyDenied ||
+        permission == CameraPermissionResult.restricted;
+
+    final title = mustOpenSettings
+        ? 'Ayarlardan izin verin'
+        : 'Kamera izni gerekli';
+
+    final subtitle = mustOpenSettings
+        ? 'iPhone Ayarlar > JamTime menusunden kamera iznini aciniz.\nAyarlar uygulamasi acilacak.'
+        : 'QR kodlari taramak icin kamera izni gerekli.';
+
+    final buttonLabel = mustOpenSettings ? 'Ayarlari Ac' : 'Izin Ver';
+    final buttonAction = mustOpenSettings ? onOpenSettings : onRequest;
+
+    return Scaffold(
+      backgroundColor: JamTimeColors.background,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            Positioned(
+              top: 4,
+              left: 4,
+              child: IconButton(
+                icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                onPressed: onBack,
+              ),
+            ),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Image.asset('assets/images/logo.png', width: 140),
+                    const SizedBox(height: 32),
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      subtitle,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.7),
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    GestureDetector(
+                      onTap: buttonAction,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 14),
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            colors: [
+                              JamTimeColors.pink,
+                              JamTimeColors.purple,
+                              JamTimeColors.cyan,
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(32),
+                        ),
+                        child: Text(
+                          buttonLabel,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

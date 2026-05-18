@@ -46,16 +46,15 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.3
 
 # ─── Launcher icon konfigürasyonu ───────────────────────────────────────────
-# Arka plan: JamTime koyu lacivert (#08122E)
-# Foreground: logo_app.png (şeffaf arka planlı waveform)
+# image_path: 1024x1024 kare PNG (navy bg + logo ortali) — iOS icin ideal
+# adaptive_icon_foreground: original logo (transparan PNG) — Android adaptive icon
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "assets/images/logo_app.png"
+  image_path: "assets/images/logo_app_square.png"
   adaptive_icon_background: "#08122E"
   adaptive_icon_foreground: "assets/images/logo_app.png"
   min_sdk_android: 21
-  # iOS: şeffaf arka plan yerine koyu lacivert kullan
   remove_alpha_ios: true
   background_color_ios: "#08122E"
 
@@ -74,6 +73,7 @@ flutter:
     - assets/allowed_tracks.json
     - assets/images/logo.png
     - assets/images/logo_app.png
+    - assets/images/logo_app_square.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
