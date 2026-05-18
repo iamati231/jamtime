@@ -13,7 +13,7 @@ class SongModeScreen extends StatefulWidget {
 }
 
 class _SongModeScreenState extends State<SongModeScreen>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with SingleTickerProviderStateMixin {
   late final AnimationController _pulse;
   StreamSubscription? _playerSub;
   bool _isPlaying = true;
@@ -23,7 +23,6 @@ class _SongModeScreenState extends State<SongModeScreen>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _pulse = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
@@ -42,37 +41,24 @@ class _SongModeScreenState extends State<SongModeScreen>
     );
   }
 
-  // ─── lifecycle ──────────────────────────────────────────────────────────────
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    switch (state) {
-      case AppLifecycleState.paused:
-        _playerSub?.cancel();
-        _playerSub = null;
-        SpotifyAuthService.disconnect();
-        break;
-      case AppLifecycleState.resumed:
-        _reconnect();
-        break;
-      default:
-        break;
-    }
-  }
-
-  Future<void> _reconnect() async {
-    final ok = await SpotifyAuthService.connect();
-    if (ok && mounted) _subscribeToPlayerState();
-  }
+  // NOT: Burada lifecycle observer YOK!
+  // Daha onceki versiyonda app paused olunca SpotifySdk.disconnect(),
+  // resume olunca connect() cagrilirdi → Spotify ile JamTime arasinda
+  // SONSUZ DONGU yaratiyordu. Artik:
+  //  - Spotify'a git: SDK baglantisi acik kalir, geri donulunce stream
+  //    devam eder
+  //  - Background/Foreground gecisleri SDK tarafindan otomatik handle
+  //    ediliyor, bizim mudahalemize gerek yok
 
   // ─── actions ────────────────────────────────────────────────────────────────
 
-  /// Müziği gerçekten durdurur (pause), sonra ekrandan çıkar.
+  /// Müziği durdurur (pause) ve HomeScreen'e döner.
+  /// SDK baglantisini KORUR ki sonraki QR scan reconnect'siz calsin.
   Future<void> _stopAndReturn() async {
     _playerSub?.cancel();
     _playerSub = null;
-    await SpotifyAuthService.pause();       // ← gerçek SDK pause çağrısı
-    await SpotifyAuthService.disconnect();
+    await SpotifyAuthService.pause();
+    // disconnect ETMIYORUZ — bir sonraki QR scan icin baglanti hazir kalsin.
     if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
   }
 
@@ -89,7 +75,6 @@ class _SongModeScreenState extends State<SongModeScreen>
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _pulse.dispose();
     _playerSub?.cancel();
     super.dispose();
