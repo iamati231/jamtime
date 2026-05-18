@@ -10,6 +10,7 @@
 #     APP_STORE_CONNECT_PRIVATE_KEY    -> .p8 dosyasinin TUM icerigi
 #     APP_STORE_CONNECT_KEY_IDENTIFIER -> 10 karakterli Key ID
 #     APP_STORE_CONNECT_ISSUER_ID      -> Issuer ID (UUID)
+#     CERTIFICATE_PRIVATE_KEY          -> RSA private key (cert imzalama icin)
 #   Group: spotify (Secret = true)
 #     SPOTIFY_CLIENT_ID                -> Spotify uygulama client ID
 #
@@ -69,6 +70,7 @@ workflows:
         script: |
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
+            --certificate-key="@env:CERTIFICATE_PRIVATE_KEY" \
             --create
 
       - name: Add certificates to keychain
@@ -163,6 +165,7 @@ workflows:
         script: |
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_ADHOC \
+            --certificate-key="@env:CERTIFICATE_PRIVATE_KEY" \
             --create
 
       - name: Add certificates to keychain
