@@ -99,9 +99,14 @@ workflows:
 
       - name: Flutter build ipa
         script: |
-          LATEST_BUILD=$(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID" 2>/dev/null || echo "0")
+          # get-latest-build-number TUM build'leri sayar (App Store + TestFlight + reddedilenler)
+          # get-latest-app-store-build-number SADECE yayinlanmis build'leri sayar
+          # Apple bir kez yuklenen build numarasini tutuyor — duplicate olmasin diye
+          # gercek "en yuksek" rakami almak gerekiyor.
+          LATEST_BUILD=$(app-store-connect get-latest-build-number "$APP_STORE_APPLE_ID" 2>/dev/null || echo "0")
           BUILD_NUMBER=$(($LATEST_BUILD + 1))
-          echo "Using build number: $BUILD_NUMBER"
+          echo "Apple'daki en son build: $LATEST_BUILD"
+          echo "Yeni build numarasi: $BUILD_NUMBER"
 
           flutter build ipa --release \
             --build-name=1.0.0 \
