@@ -5,6 +5,12 @@
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 
+	<!-- ── Export Compliance: standard HTTPS disinda sifreleme yok ─── -->
+	<!-- Bu key sayesinde App Store Connect her yuklemede "encryption" -->
+	<!-- prompt'u sormaz; otomatik exempt olarak gecer.                -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
 	<!-- ── Uygulama kimliği ─────────────────────────────────────────── -->
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
