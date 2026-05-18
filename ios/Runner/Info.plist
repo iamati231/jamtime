@@ -55,15 +55,10 @@
 	<key>NSCameraUsageDescription</key>
 	<string>JamTime, müzik kartlarındaki QR kodlarını okumak için kameraya ihtiyaç duyar.</string>
 
-	<!-- ── Yön — sadece dikey (QR tarama için optimize) ────────────── -->
+	<!-- ── Yön — sadece dikey (QR tarama için optimize, iPhone-only) ── -->
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-	</array>
-	<key>UISupportedInterfaceOrientations~ipad</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
 
 	<!-- ── UI ───────────────────────────────────────────────────────── -->
