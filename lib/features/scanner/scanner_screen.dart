@@ -17,7 +17,8 @@ class ScannerScreen extends StatefulWidget {
   /// "Durdur ve yeniden tara" sonrasi: az once calan kartin QR degeri. Bu kod
   /// goruntudeyken otomatik TEKRAR calmaz (kart cekilmis sayilmaz — eksik callback
   /// "kart yok" demek degildir). Baska bir gecerli kart hemen calar; ayni kart
-  /// ancak "Aynı kartı tekrar tara" ile acilir. Sadece bellekte, asla loglanmaz.
+  /// ancak "Aynı kartı tekrar tara" ile acilir — bu aksiyon da sadece kilitli kart
+  /// gercekten tekrar algilandiktan sonra gorunur. Sadece bellekte, asla loglanmaz.
   final String? lockedCode;
 
   @override
@@ -32,6 +33,10 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   late final Color _borderColor;
   PlaybackAttempt? _attempt; // bu ekranin son calma denemesi; dispose'da iptal edilir
   String? _lockedCode; // widget.lockedCode; "Aynı kartı tekrar tara" ile kalkar
+  // Kilitli kart (son kabul edilen karttan beri) gercekten tekrar algilandi mi? Ancak
+  // o zaman "Aynı kartı tekrar tara" gosterilir. Zamanlayici yok; "kart cekildi"
+  // cikarimi yok (callback gelmemesi belirsiz) — bu yuzden teklif kendiliginden kalkmaz.
+  bool _sameCardSeen = false;
   final DiagGapStats _lockStats = DiagGapStats(); // GECICI tani: sadece sayilar
 
   @override
@@ -92,6 +97,8 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     // bulaniklik/isik/odak da olabilir). Baska bir kart bu kontrolden gecer.
     if (_lockedCode != null && value == _lockedCode) {
       _lockStats.hit(); // GECICI tani
+      // Kilitli kart gercekten tekrar algilandi: simdi (ve ancak simdi) teklif et.
+      if (!_sameCardSeen) setState(() => _sameCardSeen = true);
       return;
     }
 
@@ -99,6 +106,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       setState(() {
         _scanState = _ScanState.validDetected;
         _connectFailed = false;
+        _sameCardSeen = false; // baska kart kabul edildi: eski gorus gecersiz
       });
       // Onceki "muzik durmamis olabilir" uyarisi yeni kartin arayuzune tasinmasin.
       ScaffoldMessenger.of(context).clearSnackBars();
@@ -291,8 +299,11 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                   ),
 
                   // Ayni kart kilidi: az once calan kart otomatik tekrar calmaz;
-                  // bilincli tekrar icin acik aksiyon.
-                  if (_lockedCode != null && _scanState == _ScanState.idle)
+                  // bilincli tekrar icin acik aksiyon — sadece kilitli kart tekrar
+                  // algilandiktan sonra. Normal taramada ekran bundan bos kalir.
+                  if (_lockedCode != null &&
+                      _sameCardSeen &&
+                      _scanState == _ScanState.idle)
                     Positioned(
                       top: scanWindow.bottom + 72,
                       left: 0,

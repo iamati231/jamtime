@@ -861,12 +861,18 @@ void main() {
       return device;
     }
 
-    _iosTest('card A still in view: not played again, explicit action offered',
+    _iosTest('card A seen again: not played again, explicit action offered',
         (tester) async {
       final plays = <String>[];
       final device = await rescanAfterPlayingA(tester, plays: plays);
       expect(plays, ['A']);
-      expect(find.text(_sameCardLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsNothing,
+          reason: 'the locked card was not seen yet: nothing to offer');
+
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _cadence);
+      expect(find.text(_sameCardLabel), findsOneWidget,
+          reason: 'the locked card was seen again');
 
       for (var i = 0; i < 20; i++) {
         // 5 s of the card staying in view, reported every 250 ms
@@ -876,6 +882,98 @@ void main() {
       expect(plays, ['A'], reason: 'the locked card must not start again');
       expect(find.byType(ScannerScreen), findsOneWidget);
       expect(find.text(_idleLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsOneWidget);
+    });
+
+    // The action is offered only after the locked card was really seen again.
+    // Silence, other codes or the mere passing of time never show it, and silence
+    // never withdraws it either (the scanner cannot tell that a card was removed).
+    _iosTest('no offer without a detection, not even after a long silence', (tester) async {
+      final plays = <String>[];
+      await rescanAfterPlayingA(tester, plays: plays);
+      expect(find.text(_sameCardLabel), findsNothing);
+
+      await _elapse(tester, const Duration(minutes: 2)); // no callbacks at all
+      expect(find.text(_sameCardLabel), findsNothing, reason: 'time alone offers nothing');
+      expect(plays, ['A']);
+    });
+
+    _iosTest('only the locked card itself triggers the offer, other codes do not',
+        (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays);
+
+      device.detect(_foreignUrl); // valid https, but not a JamTime card
+      await _elapse(tester, _tick);
+      expect(find.text(_notJamTimeLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsNothing);
+      await _elapse(tester, _labelHold + _fade);
+
+      device.detect(_unlistedSpotifyUrl); // right host, not on the whitelist
+      await _elapse(tester, _tick);
+      await _elapse(tester, _labelHold + _fade);
+
+      device.detect('just some text'); // not even a URL
+      await _elapse(tester, _cadence);
+
+      expect(find.text(_idleLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsNothing);
+      expect(plays, ['A']);
+    });
+
+    _iosTest('once offered, the action stays while nothing else happens (no timer)',
+        (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _cadence);
+      expect(find.text(_sameCardLabel), findsOneWidget);
+
+      await _elapse(tester, const Duration(minutes: 1)); // no callbacks at all
+      expect(find.text(_sameCardLabel), findsOneWidget, reason: 'silence does not withdraw it');
+      expect(plays, ['A'], reason: 'and the lock is still in place');
+    });
+
+    _iosTest('a "not a JamTime QR" label hides the offer while it is shown, then it is back',
+        (tester) async {
+      final device = await rescanAfterPlayingA(tester);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _cadence);
+      expect(find.text(_sameCardLabel), findsOneWidget);
+
+      device.detect(_foreignUrl);
+      await _elapse(tester, _tick);
+      expect(find.text(_notJamTimeLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsNothing, reason: 'only while the scanner is idle');
+
+      await _elapse(tester, _labelHold + _fade);
+      expect(find.text(_idleLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsOneWidget, reason: 'the sighting still counts');
+    });
+
+    // Another card is accepted: the earlier sighting of the locked card is history.
+    // If that card then fails, the offer must not pop up again by itself.
+    _iosTest('after another card was tried, the offer needs a new sighting of the locked card',
+        (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _cadence);
+      expect(find.text(_sameCardLabel), findsOneWidget);
+
+      device.sdk = (_) => _silent(); // Spotify stops answering: card B cannot play
+      device.detect(_otherWhitelistedUrl);
+      await _elapse(tester, _tick);
+      expect(find.text(_connectingLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsNothing);
+
+      await _elapse(tester, _giveUpAfter + _labelHold + const Duration(seconds: 1));
+      await _elapse(tester, _fade);
+      expect(find.text(_idleLabel), findsOneWidget, reason: 'recovered');
+      expect(find.text(_sameCardLabel), findsNothing, reason: 'the old sighting is gone');
+
+      device.detect(_whitelistedUrl); // the locked card shows up again
+      await _elapse(tester, _cadence);
       expect(find.text(_sameCardLabel), findsOneWidget);
     });
 
