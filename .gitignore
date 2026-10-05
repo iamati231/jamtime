@@ -49,3 +49,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
+.claude/settings.json.graphify-bak
+.claude/settings.json.graphify-bak2
