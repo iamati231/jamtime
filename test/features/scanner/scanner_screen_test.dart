@@ -973,6 +973,15 @@ void main() {
         expect(line, isNot(contains('open.spotify.com')));
         expect(line, isNot(contains('spotify:track')));
       }
+
+      // The measurement lines exist and carry numbers / state names only.
+      final stats = RegExp(r'lock stats \(released\) hits=6 gaps\(ms\) min=\d+ max=\d+ avg=\d+$');
+      expect(lines.where(stats.hasMatch), hasLength(1),
+          reason: 'detection cadence of the locked card, numbers only');
+      final accepted = RegExp(
+          r'scan accepted lastConn=\w+\([^)]*\) lastLifecycle=\S+\([^)]*\)$');
+      expect(lines.where(accepted.hasMatch), isNotEmpty,
+          reason: 'known connection state + age at every accepted scan');
     });
   });
 }

@@ -32,6 +32,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   late final Color _borderColor;
   PlaybackAttempt? _attempt; // bu ekranin son calma denemesi; dispose'da iptal edilir
   String? _lockedCode; // widget.lockedCode; "Aynı kartı tekrar tara" ile kalkar
+  final DiagGapStats _lockStats = DiagGapStats(); // GECICI tani: sadece sayilar
 
   @override
   void initState() {
@@ -72,7 +73,15 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   /// algilama normal calar.
   void _unlockSameCard() {
     diag('same-card lock released by user');
+    _logLockStats('released');
     setState(() => _lockedCode = null);
+  }
+
+  /// GECICI tani: kilitli kartin algilama aralik istatistigi (sadece sayilar).
+  void _logLockStats(String why) {
+    if (_lockStats.hits == 0) return;
+    diag('lock stats ($why) ${_lockStats.summary()}');
+    _lockStats.reset();
   }
 
   Future<void> _onQrDetected(String value) async {
@@ -81,7 +90,10 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     // Az once calan kart: otomatik tekrar calma. Burada "kart cekildi" cikarimi
     // YAPILMAZ (mobile_scanner kod kaybolunca olay gondermez; eksik callback
     // bulaniklik/isik/odak da olabilir). Baska bir kart bu kontrolden gecer.
-    if (_lockedCode != null && value == _lockedCode) return;
+    if (_lockedCode != null && value == _lockedCode) {
+      _lockStats.hit(); // GECICI tani
+      return;
+    }
 
     if (QrHandler.isAllowed(value)) {
       setState(() {
@@ -91,7 +103,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       // Onceki "muzik durmamis olabilir" uyarisi yeni kartin arayuzune tasinmasin.
       ScaffoldMessenger.of(context).clearSnackBars();
 
-      diag('scan accepted');
+      diag('scan accepted ${diagStateSummary()}');
       // Her gecerli tarama kendi denemesini alir; kamera durdurulurken ekran
       // kapanirsa playTrack hic SDK cagrisi baslatmaz.
       final attempt = SpotifyAuthService.beginAttempt();
@@ -161,6 +173,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     // Sadece KENDI denemesini iptal et; baska bir ekranin daha yeni denemesi
     // (ornegin yeni acilan scanner) etkilenmez.
     _attempt?.cancel();
+    _logLockStats('dispose');
     WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
     super.dispose();
