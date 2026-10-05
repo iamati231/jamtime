@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:spotify_sdk/spotify_sdk.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../config/jamtime_colors.dart';
+import '../../diagnostics/diag_log.dart';
 import '../auth/spotify_auth_service.dart';
 
 class SongModeScreen extends StatefulWidget {
@@ -17,6 +18,7 @@ class _SongModeScreenState extends State<SongModeScreen>
   late final AnimationController _pulse;
   StreamSubscription? _playerSub;
   bool _isPlaying = true;
+  bool _stopping = false; // cift dokunma / geri hareketi tekrar cagirmasin
 
   // ─── init ───────────────────────────────────────────────────────────────────
 
@@ -54,12 +56,24 @@ class _SongModeScreenState extends State<SongModeScreen>
 
   /// Müziği durdurur (pause) ve HomeScreen'e döner.
   /// SDK baglantisini KORUR ki sonraki QR scan reconnect'siz calsin.
+  /// pause() zaman asimina dusebilir (SDK cevap vermezse); hata veya zaman
+  /// asiminda da ekrandan cikilir, tekrar cagrilar yok sayilir.
   Future<void> _stopAndReturn() async {
+    if (_stopping) {
+      diag('stop ignored (already stopping)');
+      return;
+    }
+    _stopping = true;
+    diag('stop begin');
     _playerSub?.cancel();
     _playerSub = null;
-    await SpotifyAuthService.pause();
-    // disconnect ETMIYORUZ — bir sonraki QR scan icin baglanti hazir kalsin.
-    if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
+    try {
+      await SpotifyAuthService.pause();
+      // disconnect ETMIYORUZ — bir sonraki QR scan icin baglanti hazir kalsin.
+    } finally {
+      diag('stop done, leaving screen (mounted=$mounted)');
+      if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
+    }
   }
 
   /// Kullanıcıyı Spotify uygulamasına deeplink ile yönlendirir.

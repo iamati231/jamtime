@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../config/jamtime_colors.dart';
+import '../../diagnostics/diag_log.dart';
 import '../auth/spotify_auth_service.dart';
 import '../player_mode/song_mode_screen.dart';
 import '../permissions/permission_service.dart';
@@ -23,6 +24,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   _ScanState _scanState = _ScanState.idle;
   bool _connectFailed = false; // bağlantı hata mesajı için
   late final Color _borderColor;
+  PlaybackAttempt? _attempt; // bu ekranin son calma denemesi; dispose'da iptal edilir
 
   @override
   void initState() {
@@ -67,15 +69,30 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         _connectFailed = false;
       });
 
+      diag('scan accepted');
+      // Her gecerli tarama kendi denemesini alir; kamera durdurulurken ekran
+      // kapanirsa playTrack hic SDK cagrisi baslatmaz.
+      final attempt = SpotifyAuthService.beginAttempt();
+      _attempt = attempt;
+
       // KRITIK: Scanner'i hemen durdur ki Spotify'a gecip donulunce
       // ayni QR tekrar tetiklenmesin (sonsuz dongu fix).
       try {
-        await _controller.stop();
+        await diagTimed('camera.stop', () => _controller.stop());
       } catch (_) {}
 
       // Sarki cal — connect() AuthScreen'de yapildi, burada tekrar yapmaya
       // gerek yok (her connect Spotify app'ini aciyor). Direkt play.
-      final played = await SpotifyAuthService.playTrack(value);
+      // playTrack zaman asimina duser ve hatalari kendisi yakalar; yine de
+      // beklenmedik bir hatada state "validDetected"da takili kalmasin.
+      var played = false;
+      final sw = Stopwatch()..start();
+      try {
+        played = await SpotifyAuthService.playTrack(value, attempt: attempt);
+      } catch (e) {
+        debugPrint('[Scanner] playTrack unexpected error: ${e.runtimeType}');
+      }
+      diag('playTrack played=$played ${sw.elapsedMilliseconds}ms');
       if (!mounted) return;
 
       if (!played) {
@@ -92,6 +109,8 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
           });
           // Scanner'i tekrar baslat (yeniden denenebilsin)
           try { await _controller.start(); } catch (_) {}
+          diag('scanner restarted running=${_controller.value.isRunning} '
+              'error=${_controller.value.error?.errorCode.name}');
         }
         return;
       }
@@ -117,6 +136,9 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
   @override
   void dispose() {
+    // Sadece KENDI denemesini iptal et; baska bir ekranin daha yeni denemesi
+    // (ornegin yeni acilan scanner) etkilenmez.
+    _attempt?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
     super.dispose();
