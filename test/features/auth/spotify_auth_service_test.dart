@@ -44,22 +44,28 @@ void main() {
         return _silent();
       });
 
-      var done = false;
-      final future = SpotifyAuthService.pause().then((_) => done = true);
+      bool? confirmed;
+      final future = SpotifyAuthService.pause().then((v) => confirmed = v);
 
       await tester.pump(_pause - _second);
-      expect(done, isFalse, reason: 'still inside the pause timeout');
+      expect(confirmed, isNull, reason: 'still inside the pause timeout');
 
       await tester.pump(_second * 2);
       await future;
-      expect(done, isTrue);
+      expect(confirmed, isFalse, reason: 'a timed-out pause is NOT confirmed');
       expect(calls, ['pause']);
     }, timeout: _failFast);
 
-    testWidgets('swallows SDK errors', (tester) async {
+    testWidgets('swallows SDK errors and reports "not confirmed"', (tester) async {
       _mockSdk((call) async => throw PlatformException(code: 'PlayerAPI Error'));
 
-      await SpotifyAuthService.pause(); // must not throw
+      expect(await SpotifyAuthService.pause(), isFalse); // must not throw
+    }, timeout: _failFast);
+
+    testWidgets('reports "confirmed" only when the SDK answers', (tester) async {
+      _mockSdk((call) async => true);
+
+      expect(await SpotifyAuthService.pause(), isTrue);
     }, timeout: _failFast);
   });
 

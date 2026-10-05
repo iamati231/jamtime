@@ -12,7 +12,13 @@ import 'scan_overlay_painter.dart';
 enum _ScanState { idle, validDetected, invalidDetected }
 
 class ScannerScreen extends StatefulWidget {
-  const ScannerScreen({super.key});
+  const ScannerScreen({super.key, this.lockedCode});
+
+  /// "Durdur ve yeniden tara" sonrasi: az once calan kartin QR degeri. Bu kod
+  /// goruntudeyken otomatik TEKRAR calmaz (kart cekilmis sayilmaz — eksik callback
+  /// "kart yok" demek degildir). Baska bir gecerli kart hemen calar; ayni kart
+  /// ancak "Aynı kartı tekrar tara" ile acilir. Sadece bellekte, asla loglanmaz.
+  final String? lockedCode;
 
   @override
   State<ScannerScreen> createState() => _ScannerScreenState();
@@ -25,10 +31,12 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   bool _connectFailed = false; // bağlantı hata mesajı için
   late final Color _borderColor;
   PlaybackAttempt? _attempt; // bu ekranin son calma denemesi; dispose'da iptal edilir
+  String? _lockedCode; // widget.lockedCode; "Aynı kartı tekrar tara" ile kalkar
 
   @override
   void initState() {
     super.initState();
+    _lockedCode = widget.lockedCode;
     WidgetsBinding.instance.addObserver(this);
     _borderColor = JamTimeColors.borderColors[Random().nextInt(JamTimeColors.borderColors.length)];
     _requestPermission();
@@ -60,14 +68,28 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     if (mounted) setState(() => _permission = result);
   }
 
+  /// Kilitli kart icin kullanici bilincli olarak "tekrar tara" dedi: sonraki
+  /// algilama normal calar.
+  void _unlockSameCard() {
+    diag('same-card lock released by user');
+    setState(() => _lockedCode = null);
+  }
+
   Future<void> _onQrDetected(String value) async {
     if (_scanState != _ScanState.idle) return;
+
+    // Az once calan kart: otomatik tekrar calma. Burada "kart cekildi" cikarimi
+    // YAPILMAZ (mobile_scanner kod kaybolunca olay gondermez; eksik callback
+    // bulaniklik/isik/odak da olabilir). Baska bir kart bu kontrolden gecer.
+    if (_lockedCode != null && value == _lockedCode) return;
 
     if (QrHandler.isAllowed(value)) {
       setState(() {
         _scanState = _ScanState.validDetected;
         _connectFailed = false;
       });
+      // Onceki "muzik durmamis olabilir" uyarisi yeni kartin arayuzune tasinmasin.
+      ScaffoldMessenger.of(context).clearSnackBars();
 
       diag('scan accepted');
       // Her gecerli tarama kendi denemesini alir; kamera durdurulurken ekran
@@ -116,7 +138,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       }
 
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const SongModeScreen()),
+        MaterialPageRoute(builder: (_) => SongModeScreen(playedCode: value)),
       );
     } else if (value.startsWith('https://')) {
       setState(() {
@@ -254,6 +276,28 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                       },
                     ),
                   ),
+
+                  // Ayni kart kilidi: az once calan kart otomatik tekrar calmaz;
+                  // bilincli tekrar icin acik aksiyon.
+                  if (_lockedCode != null && _scanState == _ScanState.idle)
+                    Positioned(
+                      top: scanWindow.bottom + 72,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: TextButton(
+                          onPressed: _unlockSameCard,
+                          child: const Text(
+                            'Aynı kartı tekrar tara',
+                            style: TextStyle(
+                              color: JamTimeColors.cyan,
+                              fontSize: 14,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               );
             },

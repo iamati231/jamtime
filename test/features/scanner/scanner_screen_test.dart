@@ -5,10 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jamtime/features/auth/spotify_auth_service.dart';
+import 'package:jamtime/features/player_mode/song_mode_screen.dart';
 import 'package:jamtime/features/scanner/qr_handler.dart';
 import 'package:jamtime/features/scanner/scan_overlay_painter.dart';
 import 'package:jamtime/features/scanner/scanner_screen.dart';
 import 'package:jamtime/features/scanner/track_whitelist.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 // Regression: on iOS the spotify_sdk plugin can NEVER answer play/pause/connect
 // (playerAPI is nil -> no callback). The awaits had no timeout, so ScannerScreen
@@ -36,6 +38,9 @@ const _connectingLabel = "Spotify'a bağlanıyor...";
 const _connectFailedLabel = 'Spotify bağlantısı kurulamadı';
 const _notJamTimeLabel = 'Bu bir JamTime QR kodu değil';
 const _songModeStopLabel = 'Durdur ve çık';
+const _rescanLabel = 'Durdur ve yeniden tara';
+const _sameCardLabel = 'Aynı kartı tekrar tara';
+const _pauseHint = "Müzik durmamış olabilir. Gerekirse Spotify'dan durdurun.";
 
 // ─── Timing (fake time) ─────────────────────────────────────────────────────────
 // playTrack: play (play timeout), then ONE reconnect (reconnect timeout). Both come
@@ -51,6 +56,8 @@ const _cadence = Duration(milliseconds: 250);
 const _tick = Duration(milliseconds: 10);
 // AnimatedSwitcher cross-fades labels for 300ms; old and new label coexist until then.
 const _fade = Duration(milliseconds: 400);
+// A replaced route stays mounted until its page transition (<= 500 ms) is over.
+const _transition = Duration(milliseconds: 600);
 
 /// If the old "hangs forever" behaviour comes back, fail in seconds instead of
 /// after testWidgets' 10 minute default.
@@ -233,7 +240,7 @@ const _openLabel = 'open scanner';
 
 /// A Home screen with a button that pushes a NEW ScannerScreen, like the real app
 /// (phone sized view). Use [_openScannerFromHome] / [_leaveScanner] on top of it.
-Future<_Device> _installHome(WidgetTester tester) async {
+Future<_Device> _installHome(WidgetTester tester, {NavigatorObserver? observer}) async {
   tester.view.physicalSize = const Size(1170, 2532); // iPhone like, 3x
   tester.view.devicePixelRatio = 3;
   addTearDown(tester.view.reset);
@@ -241,6 +248,7 @@ Future<_Device> _installHome(WidgetTester tester) async {
   final device = _Device.install();
   await tester.pumpWidget(
     MaterialApp(
+      navigatorObservers: [?observer],
       home: Builder(
         builder: (context) => Scaffold(
           body: Center(
@@ -285,6 +293,77 @@ String _uriFor(String url) {
 
 String? _playedUri(MethodCall call) =>
     (call.arguments as Map<Object?, Object?>?)?['spotifyUri'] as String?;
+
+/// Counts the routes on the navigator stack (push / pop / replace / remove).
+class _RouteCounter extends NavigatorObserver {
+  final List<Route<dynamic>> _stack = <Route<dynamic>>[];
+
+  int get depth => _stack.length;
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) => _stack.add(route);
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) => _stack.remove(route);
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) =>
+      _stack.remove(route);
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    final i = oldRoute == null ? -1 : _stack.indexOf(oldRoute);
+    if (i >= 0) _stack.removeAt(i);
+    if (newRoute != null) _stack.insert(i >= 0 ? i : _stack.length, newRoute);
+  }
+}
+
+enum _PauseMode { confirm, silent, error }
+
+/// SDK answers for the song-mode flows: `play` always succeeds, `pause` behaves as
+/// [pause]. [plays] collects WHICH card was played ('A' / 'B' / '?'), never the URI.
+void _answerSdk(_Device device, {_PauseMode pause = _PauseMode.confirm, List<String>? plays}) {
+  final uriA = _uriFor(_whitelistedUrl);
+  final uriB = _uriFor(_otherWhitelistedUrl);
+  device.sdk = (call) {
+    switch (call.method) {
+      case 'play':
+        final uri = _playedUri(call);
+        plays?.add(uri == uriA ? 'A' : (uri == uriB ? 'B' : '?'));
+        return Future<Object?>.value(true);
+      case 'pause':
+        switch (pause) {
+          case _PauseMode.confirm:
+            return Future<Object?>.value(true);
+          case _PauseMode.silent:
+            return _silent();
+          case _PauseMode.error:
+            return Future<Object?>.error(PlatformException(code: 'PlayerAPI Error'));
+        }
+    }
+    return Future<Object?>.value(null);
+  };
+}
+
+/// The user shows [url]; the song mode opens (the play call answers right away).
+Future<void> _scanUntilSongMode(WidgetTester tester, _Device device, String url) async {
+  device.detect(url);
+  await _elapse(tester, _tick);
+  await _elapse(tester, const Duration(seconds: 1)); // page transition
+  expect(find.text(_songModeStopLabel), findsOneWidget, reason: 'song mode did not open');
+}
+
+/// Waits until a scanner is on screen with its camera streaming (e.g. after the
+/// song mode replaced itself by a new scanner).
+Future<void> _waitForScanner(WidgetTester tester, _Device device) async {
+  for (var i = 0;
+      i < 30 && !(find.text(_idleLabel).evaluate().isNotEmpty && device.cameraEventsAttached);
+      i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  expect(find.text(_idleLabel), findsOneWidget, reason: 'scanner not ready');
+  expect(device.cameraEventsAttached, isTrue, reason: 'camera not streaming');
+}
 
 /// Colour of the scan frame. Unlike the label it flips with the state at once
 /// (no cross-fade): red = invalid / failure, anything else = idle or connecting.
@@ -638,5 +717,262 @@ void main() {
         expect(device.scannerMethods, isEmpty, reason: 'camera keeps scanning');
       });
     }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Song mode: "Durdur ve yeniden tara" replaces the song mode by a new scanner.
+  // ─────────────────────────────────────────────────────────────────────────────
+  group('song mode: stop and re-scan', () {
+    _iosTest('pause confirmed: a ready scanner replaces the song mode, no hint',
+        (tester) async {
+      final routes = _RouteCounter();
+      final device = await _installHome(tester, observer: routes);
+      _answerSdk(device);
+      await _openScannerFromHome(tester);
+      expect(routes.depth, 2, reason: 'Home + scanner');
+
+      await _scanUntilSongMode(tester, device, _whitelistedUrl);
+      expect(routes.depth, 2, reason: 'Home + song mode (replaced, not stacked)');
+
+      await tester.tap(find.text(_rescanLabel));
+      await _elapse(tester, _tick);
+      await _waitForScanner(tester, device);
+      await _elapse(tester, _transition); // the old song mode is disposed now
+
+      expect(find.byType(ScannerScreen), findsOneWidget);
+      expect(find.byType(SongModeScreen), findsNothing);
+      expect(find.text(_pauseHint), findsNothing);
+      expect(device.sdkCalls.where((m) => m == 'pause'), hasLength(1));
+      expect(routes.depth, 2, reason: 'Home + the new scanner');
+    });
+
+    for (final mode in [_PauseMode.silent, _PauseMode.error]) {
+      _iosTest('pause ${mode.name}: the scanner still opens and the hint is visible there',
+          (tester) async {
+        final device = await _installHome(tester);
+        _answerSdk(device, pause: mode);
+        await _openScannerFromHome(tester);
+        await _scanUntilSongMode(tester, device, _whitelistedUrl);
+
+        await tester.tap(find.text(_rescanLabel));
+        await _elapse(tester, _tick);
+        if (mode == _PauseMode.silent) {
+          // Inside the pause timeout nothing is claimed and nothing is left yet.
+          await _elapse(tester, SpotifyAuthService.pauseTimeout - const Duration(seconds: 1));
+          expect(find.byType(SongModeScreen), findsOneWidget);
+          expect(find.text(_pauseHint), findsNothing);
+          await _elapse(tester, const Duration(seconds: 2)); // pause timed out
+        }
+        await _waitForScanner(tester, device);
+        await _elapse(tester, _transition); // old song mode disposed, snack bar settled
+
+        expect(find.byType(SongModeScreen), findsNothing);
+        expect(find.byType(ScannerScreen), findsOneWidget);
+        expect(find.text(_pauseHint), findsOneWidget, reason: 'visible on the target page');
+      });
+    }
+
+    _iosTest('shared guard: double tap, other action and back gesture give one pause, one navigation',
+        (tester) async {
+      final routes = _RouteCounter();
+      final device = await _installHome(tester, observer: routes);
+      _answerSdk(device, pause: _PauseMode.silent); // keeps the guarded window open
+      await _openScannerFromHome(tester);
+      await _scanUntilSongMode(tester, device, _whitelistedUrl);
+
+      await tester.tap(find.text(_rescanLabel));
+      await _elapse(tester, _tick);
+      await tester.tap(find.text(_rescanLabel)); // double tap
+      await tester.tap(find.text(_songModeStopLabel)); // the other action
+      await tester.binding.handlePopRoute(); // back gesture
+      await _elapse(tester, _tick);
+      expect(device.sdkCalls.where((m) => m == 'pause'), hasLength(1));
+
+      await _elapse(tester, SpotifyAuthService.pauseTimeout + const Duration(seconds: 1));
+      await _waitForScanner(tester, device);
+      expect(device.sdkCalls.where((m) => m == 'pause'), hasLength(1));
+      expect(find.byType(ScannerScreen), findsOneWidget, reason: 'the first action (re-scan) wins');
+      expect(find.text(_openLabel), findsNothing, reason: 'no second navigation to Home');
+      expect(routes.depth, 2);
+    });
+
+    _iosTest('several rounds: constant stack depth, one camera session and one play per round',
+        (tester) async {
+      final routes = _RouteCounter();
+      final device = await _installHome(tester, observer: routes);
+      final plays = <String>[];
+      _answerSdk(device, plays: plays);
+      await _openScannerFromHome(tester);
+
+      for (var round = 0; round < 4; round++) {
+        final startsBefore = device.scannerCount('start');
+        expect(find.byType(MobileScanner), findsOneWidget, reason: 'round $round: one camera widget');
+        await _scanUntilSongMode(
+            tester, device, round.isEven ? _whitelistedUrl : _otherWhitelistedUrl);
+        expect(find.byType(MobileScanner), findsNothing, reason: 'no camera in the song mode');
+        expect(device.cameraEventsAttached, isFalse, reason: 'camera stopped during the song');
+        expect(routes.depth, 2, reason: 'round $round: Home + song mode');
+
+        await tester.tap(find.text(_rescanLabel));
+        await _elapse(tester, _tick);
+        await _waitForScanner(tester, device);
+        expect(find.byType(MobileScanner), findsOneWidget);
+        expect(find.byType(ScannerScreen), findsOneWidget);
+        expect(device.scannerCount('start') - startsBefore, 1,
+            reason: 'round $round: exactly one camera start');
+        expect(routes.depth, 2, reason: 'round $round: Home + scanner');
+      }
+      expect(plays, ['A', 'B', 'A', 'B'], reason: 'exactly one play per round');
+      expect(device.sdkCalls.where((m) => m == 'pause'), hasLength(4));
+    });
+
+    _iosTest('the pause hint does not linger into the next song mode', (tester) async {
+      final device = await _installHome(tester);
+      _answerSdk(device, pause: _PauseMode.error);
+      await _openScannerFromHome(tester);
+      await _scanUntilSongMode(tester, device, _whitelistedUrl);
+      await tester.tap(find.text(_rescanLabel));
+      await _elapse(tester, _tick);
+      await _waitForScanner(tester, device);
+      await _elapse(tester, _transition);
+      expect(find.text(_pauseHint), findsOneWidget);
+
+      await _scanUntilSongMode(tester, device, _otherWhitelistedUrl); // another card
+      expect(find.text(_pauseHint), findsNothing, reason: 'stale warning must be gone');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Re-scan lock. mobile_scanner (7.2.0) re-reports a visible code every >=250 ms
+  // but sends NOTHING when a frame has no (or an undecodable) code, so missing
+  // callbacks cannot be read as "card removed". The just-played card is therefore
+  // locked until the user asks for it explicitly; any other valid card plays at once.
+  // ─────────────────────────────────────────────────────────────────────────────
+  group('re-scan: just-played card lock', () {
+    /// Card A plays, then "Durdur ve yeniden tara": the new scanner is locked on A.
+    Future<_Device> rescanAfterPlayingA(WidgetTester tester, {List<String>? plays}) async {
+      final device = await _installHome(tester);
+      _answerSdk(device, plays: plays);
+      await _openScannerFromHome(tester);
+      await _scanUntilSongMode(tester, device, _whitelistedUrl);
+      await tester.tap(find.text(_rescanLabel));
+      await _elapse(tester, _tick);
+      await _waitForScanner(tester, device);
+      return device;
+    }
+
+    _iosTest('card A still in view: not played again, explicit action offered',
+        (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays);
+      expect(plays, ['A']);
+      expect(find.text(_sameCardLabel), findsOneWidget);
+
+      for (var i = 0; i < 20; i++) {
+        // 5 s of the card staying in view, reported every 250 ms
+        device.detect(_whitelistedUrl);
+        await _elapse(tester, _cadence);
+      }
+      expect(plays, ['A'], reason: 'the locked card must not start again');
+      expect(find.byType(ScannerScreen), findsOneWidget);
+      expect(find.text(_idleLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsOneWidget);
+    });
+
+    _iosTest('a long silence is NOT read as "card removed"', (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _cadence);
+
+      await _elapse(tester, const Duration(seconds: 30)); // no callbacks at all
+      device.detect(_whitelistedUrl); // the same card reappears (or never left)
+      await _elapse(tester, _tick);
+      await _elapse(tester, const Duration(seconds: 1));
+
+      expect(plays, ['A'], reason: 'still locked after a long gap in the callbacks');
+      expect(find.byType(ScannerScreen), findsOneWidget);
+    });
+
+    _iosTest('another valid card plays immediately while the lock is active',
+        (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays);
+      for (var i = 0; i < 3; i++) {
+        device.detect(_whitelistedUrl);
+        await _elapse(tester, _cadence);
+      }
+      expect(plays, ['A']);
+
+      await _scanUntilSongMode(tester, device, _otherWhitelistedUrl);
+      expect(plays, ['A', 'B']);
+    });
+
+    _iosTest('"Aynı kartı tekrar tara" releases the lock: the next detection plays the card',
+        (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _cadence);
+      expect(plays, ['A']);
+
+      await tester.tap(find.text(_sameCardLabel));
+      await _elapse(tester, _tick);
+      expect(find.text(_sameCardLabel), findsNothing, reason: 'lock released, action gone');
+
+      await _scanUntilSongMode(tester, device, _whitelistedUrl);
+      expect(plays, ['A', 'A'], reason: 'the same card plays on purpose');
+    });
+
+    _iosTest('a scanner opened from Home has no lock and offers no extra action',
+        (tester) async {
+      final plays = <String>[];
+      final device = await _installHome(tester);
+      _answerSdk(device, plays: plays);
+      await _openScannerFromHome(tester);
+      expect(find.text(_sameCardLabel), findsNothing);
+
+      await _scanUntilSongMode(tester, device, _whitelistedUrl);
+      expect(plays, ['A']);
+    });
+
+    _iosTest('only the card that played last is locked', (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays);
+      await _scanUntilSongMode(tester, device, _otherWhitelistedUrl); // B plays
+      await tester.tap(find.text(_rescanLabel));
+      await _elapse(tester, _tick);
+      await _waitForScanner(tester, device); // now locked on B
+
+      await _scanUntilSongMode(tester, device, _whitelistedUrl); // A is free again
+      expect(plays, ['A', 'B', 'A']);
+    });
+
+    _iosTest('logs never contain QR contents', (tester) async {
+      final lines = <String>[];
+      final original = debugPrint;
+      // flutter_test checks debugPrint BEFORE the tear-downs run: restore it here.
+      debugPrint = (String? message, {int? wrapWidth}) => lines.add(message ?? '');
+      try {
+        final device = await rescanAfterPlayingA(tester);
+        for (var i = 0; i < 6; i++) {
+          device.detect(_whitelistedUrl); // ignored, locked
+          await _elapse(tester, _cadence);
+        }
+        await tester.tap(find.text(_sameCardLabel));
+        await _elapse(tester, _tick);
+        await _scanUntilSongMode(tester, device, _whitelistedUrl);
+      } finally {
+        debugPrint = original;
+      }
+
+      final idA = Uri.parse(_whitelistedUrl).pathSegments.last;
+      expect(lines, isNotEmpty, reason: 'the diagnostics did log something');
+      for (final line in lines) {
+        expect(line, isNot(contains(idA)));
+        expect(line, isNot(contains('open.spotify.com')));
+        expect(line, isNot(contains('spotify:track')));
+      }
+    });
   });
 }

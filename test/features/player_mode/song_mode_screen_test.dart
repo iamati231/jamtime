@@ -14,6 +14,8 @@ import 'package:jamtime/features/player_mode/song_mode_screen.dart';
 const _sdk = MethodChannel('spotify_sdk');
 const _playerState = MethodChannel('player_state_subscription');
 const _stopLabel = 'Durdur ve çık';
+const _rescanLabel = 'Durdur ve yeniden tara';
+const _hint = "Müzik durmamış olabilir. Gerekirse Spotify'dan durdurun.";
 const _rootLabel = 'open song mode';
 
 /// Fake-Zeit, nach der ein stummes pause() sicher ins Timeout gelaufen ist.
@@ -153,5 +155,103 @@ void main() {
 
     expect(find.text(_rootLabel), findsOneWidget);
     expect(_pauseCount(calls), 1);
+  });
+
+  // "Durdur ve çık" (and the back gesture) with a pause that was NOT confirmed: the
+  // target page (Home) must say so; with a confirmed pause it must not.
+  group('stop and exit: warning when the pause is not confirmed', () {
+    testWidgets('silent SDK: the hint is visible on the target page', (tester) async {
+      _mockSdk((call) => _silent());
+      await _openSongMode(tester);
+
+      await tester.tap(find.text(_stopLabel));
+      await tester.pump();
+      await tester.pump(_afterPauseTimeout);
+      await tester.pump(const Duration(milliseconds: 600)); // pop transition + snack bar
+
+      expect(find.text(_rootLabel), findsOneWidget, reason: 'target page');
+      expect(find.text(_hint), findsOneWidget);
+    });
+
+    testWidgets('pause error: the hint is visible on the target page', (tester) async {
+      _mockSdk((call) async => throw PlatformException(code: 'PlayerAPI Error'));
+      await _openSongMode(tester);
+
+      await tester.tap(find.text(_stopLabel));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(find.text(_rootLabel), findsOneWidget);
+      expect(find.text(_hint), findsOneWidget);
+    });
+
+    testWidgets('back gesture counts as "Durdur ve çık": same hint', (tester) async {
+      _mockSdk((call) => _silent());
+      await _openSongMode(tester);
+
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      await tester.pump(_afterPauseTimeout);
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(find.text(_rootLabel), findsOneWidget);
+      expect(find.text(_hint), findsOneWidget);
+    });
+
+    testWidgets('confirmed pause: no hint', (tester) async {
+      _mockSdk((call) async => true);
+      await _openSongMode(tester);
+
+      await tester.tap(find.text(_stopLabel));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(find.text(_rootLabel), findsOneWidget);
+      expect(find.text(_hint), findsNothing);
+    });
+  });
+
+  // Three actions need more room than the old two: no overflow on a small iPhone.
+  testWidgets('the layout fits a small phone (375x667) without overflow', (tester) async {
+    _mockSdk((call) async => true);
+    await _openSongMode(tester);
+    tester.view.physicalSize = const Size(750, 1334); // iPhone SE like, 2x
+    tester.view.devicePixelRatio = 2;
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(tester.takeException(), isNull, reason: 'RenderFlex overflow or similar');
+    expect(find.text(_rescanLabel), findsOneWidget);
+    expect(find.text(_stopLabel), findsOneWidget);
+    expect(find.text("Spotify'a git"), findsOneWidget);
+    // all three actions are really on screen (not pushed below the fold)
+    final screen = tester.view.physicalSize / tester.view.devicePixelRatio;
+    for (final label in [_rescanLabel, _stopLabel, "Spotify'a git"]) {
+      expect(tester.getBottomLeft(find.text(label)).dy, lessThanOrEqualTo(screen.height));
+    }
+  });
+
+  testWidgets('all actions are enabled at first and disabled while leaving', (tester) async {
+    _mockSdk((call) => _silent());
+    await _openSongMode(tester);
+
+    TextButton exit() => tester.widget(find.widgetWithText(TextButton, _stopLabel));
+    OutlinedButton spotify() => tester.widget(find.bySubtype<OutlinedButton>());
+    GestureDetector primary() => tester.widget(find
+        .ancestor(of: find.text(_rescanLabel), matching: find.byType(GestureDetector))
+        .first);
+
+    expect(exit().onPressed, isNotNull);
+    expect(spotify().onPressed, isNotNull);
+    expect(primary().onTap, isNotNull, reason: 're-scan is the main action and available');
+
+    await tester.tap(find.text(_stopLabel));
+    await tester.pump();
+
+    expect(exit().onPressed, isNull);
+    expect(spotify().onPressed, isNull);
+    expect(primary().onTap, isNull);
+
+    await tester.pump(_afterPauseTimeout); // let the pause timeout and the pop finish
+    await tester.pump(const Duration(milliseconds: 600));
   });
 }

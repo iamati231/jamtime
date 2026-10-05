@@ -52,11 +52,14 @@ class SpotifyAuthService {
   //
   // BILINEN SINIR: Generation-guard sadece eski denemelerin YENI SDK cagrisi
   // baslatmasini engeller; calisan bir connect'i iptal edemez. Paralel
-  // connectToSpotifyRemote cagrilari bu yuzden mumkun kalir (iOS plugin'de tek
-  // connectionResult slot'u: sadece en yeni connect cevaplanir, her connect ayri
-  // bir Spotify gecisi yapar). Kucuk cozum — single-flight (calisan connect'e
-  // ikinci cagri katilir, slot timeout'ta da serbest kalir) — simdilik
-  // ERTELENDI; cihaz testi ve loglardan sonra karar verilecek.
+  // connectToSpotifyRemote cagrilari bu yuzden mumkun kalir (deneyle gosterildi).
+  // iOS plugin'in tek connectionResult slot'u cagrilari SERILESTIRMEZ: yeni bir
+  // connect slot'un uzerine yazar (eski cagrinin Dart future'i hic cevaplanmaz,
+  // Dart timeout'u bitirir; sadece en yeni connect cevaplanir). Her connect ayrica
+  // yeni bir SPTAppRemote kurar ve ayri bir Spotify gecisi yapar. Kucuk cozum —
+  // single-flight (calisan connect'e ikinci cagri katilir, slot timeout'ta da
+  // serbest kalir) — simdilik ERTELENDI; cihaz testi ve loglardan sonra karar
+  // verilecek.
   static Future<bool> connect({
     bool pauseAfter = true,
     Duration timeout = loginTimeout,
@@ -98,11 +101,15 @@ class SpotifyAuthService {
   }
 
   // ─── Playback durdur ────────────────────────────────────────────────────────
-  static Future<void> pause() async {
+  // true: SDK pause'u onayladi. false: zaman asimi veya hata — muzigin durdugu
+  // KESIN DEGIL (arayuz buna gore uyarir, "durdu" demez).
+  static Future<bool> pause() async {
     try {
       await diagTimed('pause', () => SpotifySdk.pause().timeout(pauseTimeout));
+      return true;
     } catch (e) {
       debugPrint('[Spotify] pause error: ${_errText(e)}');
+      return false;
     }
   }
 
