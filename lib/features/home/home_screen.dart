@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../config/jamtime_colors.dart';
+import '../rules/rules_screen.dart';
 import '../scanner/scanner_screen.dart';
 import 'spotify_sheet.dart';
 
@@ -43,11 +44,51 @@ class HomeScreen extends StatelessWidget {
                       MaterialPageRoute(builder: (_) => const ScannerScreen()),
                     ),
                   ),
+                  const SizedBox(height: 20),
+                  // Nebenaktion: sadece bilgi sayfasini acar (kamera ve Spotify'a dokunmaz)
+                  _RulesButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const RulesScreen()),
+                    ),
+                  ),
                 ],
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// "Oyun kurallari": NEBEN aksiyon (outlined, cyan); ana aksiyon "QR Tara" kalir.
+/// Etiket buyuk yazida alt satira sarilir (Flexible), tasmaz.
+class _RulesButton extends StatelessWidget {
+  final VoidCallback onPressed;
+
+  const _RulesButton({required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        side: const BorderSide(color: JamTimeColors.cyan, width: 1),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.menu_book_outlined, size: 18, color: JamTimeColors.cyan),
+          SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              'Oyun kuralları',
+              style: TextStyle(color: JamTimeColors.cyan, letterSpacing: 1),
+            ),
+          ),
+        ],
       ),
     );
   }
