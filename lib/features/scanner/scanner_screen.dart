@@ -4,6 +4,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../config/jamtime_colors.dart';
 import '../../diagnostics/diag_log.dart';
 import '../auth/spotify_auth_service.dart';
+import '../auth/spotify_connection_monitor.dart';
 import '../player_mode/song_mode_screen.dart';
 import '../permissions/permission_service.dart';
 import 'qr_handler.dart';
@@ -32,17 +33,32 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   bool _connectFailed = false; // bağlantı hata mesajı için
   late final Color _borderColor;
   PlaybackAttempt? _attempt; // bu ekranin son calma denemesi; dispose'da iptal edilir
-  String? _lockedCode; // widget.lockedCode; "Aynı kartı tekrar tara" ile kalkar
-  // Kilitli kart (son kabul edilen karttan beri) gercekten tekrar algilandi mi? Ancak
-  // o zaman "Aynı kartı tekrar tara" gosterilir. Zamanlayici yok; "kart cekildi"
-  // cikarimi yok (callback gelmemesi belirsiz) — bu yuzden teklif kendiliginden kalkmaz.
-  bool _sameCardSeen = false;
+  // Kilitli kartlar: az once calan kart ("Durdur ve yeniden tara" sonrasi,
+  // widget.lockedCode) ve calmayi BASARAMAYAN her kart. Kilitli bir kart gorunur kalsa
+  // da otomatik tekrar denenmez (her deneme bir Spotify gecisi demektir). TEK kod
+  // degil KUME: iki kart birlikte gorunurse biri digerini acmasin ve kilitli kart
+  // kilitli olmayani gizlemesin (bkz. onDetect). Sadece bellekte, asla loglanmaz.
+  final Set<String> _lockedCodes = <String>{};
+  // _lockedCodes'in calmayi BASARAMAYAN kartlar olan alt kumesi ("Yeniden bagla" basarili
+  // olunca SADECE bunlar acilir; "az once calan" kart kilitli kalir).
+  final Set<String> _failedCodes = <String>{};
+  // Kilitli kartlardan en son tekrar algilanan. Ancak o zaman "Aynı kartı tekrar tara"
+  // gosterilir ve SADECE bu kodu acar. Zamanlayici yok; "kart cekildi" cikarimi yok
+  // (callback gelmemesi belirsiz) — bu yuzden teklif kendiliginden kalkmaz.
+  String? _seenLockedCode;
+  // Baglanti BILINEN sekilde yoksa kacinilmaz Spotify gecisini onceden acikla
+  // ("Spotify'a baglaniyor" altinda "Spotify kisa sure acilabilir").
+  bool _hopHint = false;
+  // Son calma denemesi basarisiz oldu: "Yeniden bagla" (interaktif, login zaman
+  // asimi 90 sn) teklif edilir. Otomatik tarama reconnect'i 15 sn'de KALIR.
+  bool _needsReconnect = false;
   final DiagGapStats _lockStats = DiagGapStats(); // GECICI tani: sadece sayilar
 
   @override
   void initState() {
     super.initState();
-    _lockedCode = widget.lockedCode;
+    final locked = widget.lockedCode;
+    if (locked != null) _lockedCodes.add(locked);
     WidgetsBinding.instance.addObserver(this);
     _borderColor = JamTimeColors.borderColors[Random().nextInt(JamTimeColors.borderColors.length)];
     _requestPermission();
@@ -74,12 +90,18 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     if (mounted) setState(() => _permission = result);
   }
 
-  /// Kilitli kart icin kullanici bilincli olarak "tekrar tara" dedi: sonraki
-  /// algilama normal calar.
+  /// Kilitli kart icin kullanici bilincli olarak "tekrar tara" dedi: SADECE bu kartin
+  /// kilidi kalkar, sonraki algilamasi normal calar. Diger kilitli kartlar kilitli kalir.
   void _unlockSameCard() {
+    final code = _seenLockedCode;
+    if (code == null) return;
     diag('same-card lock released by user');
     _logLockStats('released');
-    setState(() => _lockedCode = null);
+    setState(() {
+      _lockedCodes.remove(code);
+      _failedCodes.remove(code);
+      _seenLockedCode = null;
+    });
   }
 
   /// GECICI tani: kilitli kartin algilama aralik istatistigi (sadece sayilar).
@@ -89,16 +111,55 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     _lockStats.reset();
   }
 
+  /// "Yeniden bagla": kullanicinin BILINCLI eylemi. Interaktif baglanti, login
+  /// zaman asimini (90 sn) kullanir; kullanici Spotify'da izin/giris yapiyor olabilir.
+  /// Basarili olursa kilitli BASARISIZ kartlar acilir: gorunur kart simdi calar.
+  /// ("Az once calan" kart, widget.lockedCode, kilitli kalir.)
+  /// Calisirken tarama durumu "baglaniyor"dur, yani yeni algilamalar yok sayilir.
+  Future<void> _reconnectInteractively() async {
+    if (_scanState != _ScanState.idle) return;
+    setState(() {
+      _scanState = _ScanState.validDetected;
+      _hopHint = true;
+      _connectFailed = false;
+    });
+    // connect()'in varsayilan zaman limiti login zaman asimidir (90 sn).
+    final ok = await SpotifyAuthService.connect();
+    if (!mounted) return;
+    if (ok) {
+      setState(() {
+        _scanState = _ScanState.idle;
+        _hopHint = false;
+        _needsReconnect = false;
+        _lockedCodes.removeAll(_failedCodes);
+        _failedCodes.clear();
+        _seenLockedCode = null;
+      });
+      return;
+    }
+    setState(() {
+      _scanState = _ScanState.invalidDetected;
+      _connectFailed = true;
+    });
+    await Future.delayed(const Duration(seconds: 3));
+    if (mounted) {
+      setState(() {
+        _scanState = _ScanState.idle;
+        _connectFailed = false;
+      });
+    }
+  }
+
   Future<void> _onQrDetected(String value) async {
     if (_scanState != _ScanState.idle) return;
 
-    // Az once calan kart: otomatik tekrar calma. Burada "kart cekildi" cikarimi
-    // YAPILMAZ (mobile_scanner kod kaybolunca olay gondermez; eksik callback
-    // bulaniklik/isik/odak da olabilir). Baska bir kart bu kontrolden gecer.
-    if (_lockedCode != null && value == _lockedCode) {
+    // Az once calan ya da calamayan kart: otomatik tekrar deneme. Burada "kart
+    // cekildi" cikarimi YAPILMAZ (mobile_scanner kod kaybolunca olay gondermez; eksik
+    // callback bulaniklik/isik/odak da olabilir). Baska bir kart bu kontrolden gecer.
+    if (_lockedCodes.contains(value)) {
       _lockStats.hit(); // GECICI tani
       // Kilitli kart gercekten tekrar algilandi: simdi (ve ancak simdi) teklif et.
-      if (!_sameCardSeen) setState(() => _sameCardSeen = true);
+      if (_seenLockedCode != value) setState(() => _seenLockedCode = value);
       return;
     }
 
@@ -106,7 +167,8 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       setState(() {
         _scanState = _ScanState.validDetected;
         _connectFailed = false;
-        _sameCardSeen = false; // baska kart kabul edildi: eski gorus gecersiz
+        _seenLockedCode = null; // baska kart kabul edildi: eski gorus gecersiz
+        _hopHint = !SpotifyConnectionMonitor.isConnected;
       });
       // Onceki "muzik durmamis olabilir" uyarisi yeni kartin arayuzune tasinmasin.
       ScaffoldMessenger.of(context).clearSnackBars();
@@ -138,10 +200,17 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       if (!mounted) return;
 
       if (!played) {
-        // Baglanti dustu/sarki calmadi — kullaniciya bildir
+        // Baglanti dustu/sarki calmadi — kullaniciya bildir. Karti KILITLE: kamera
+        // yeniden basladiginda hala gorunen bir QR otomatik yeni bir reconnect (ve
+        // Spotify gecisi) dongusu baslatmasin; ayni kart ancak acik eylemle yeniden
+        // denenir ("Aynı kartı tekrar tara" / "Yeniden bağla"). Baska kart hemen calar.
         setState(() {
           _scanState = _ScanState.invalidDetected;
           _connectFailed = true;
+          _lockedCodes.add(value);
+          _failedCodes.add(value);
+          _seenLockedCode = null;
+          _needsReconnect = true;
         });
         await Future.delayed(const Duration(seconds: 3));
         if (mounted) {
@@ -214,10 +283,17 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
             controller: _controller,
             scanWindow: scanWindow,
             onDetect: (capture) {
-              final barcode = capture.barcodes.firstOrNull;
-              if (barcode?.rawValue != null) {
-                _onQrDetected(barcode!.rawValue!);
-              }
+              // Bir karede birden fazla kod olabilir. Kilitli bir kart listede ilk sirada
+              // olsa da kilitli OLMAYAN karti gizlemesin: once kilitli olmayan ilk kodu al;
+              // hepsi kilitliyse ilkini (kilitli kartin "tekrar algilandi" bilgisi icin).
+              final values = [
+                for (final barcode in capture.barcodes)
+                  if (barcode.rawValue != null) barcode.rawValue!,
+              ];
+              if (values.isEmpty) return;
+              _onQrDetected(
+                values.firstWhere((v) => !_lockedCodes.contains(v), orElse: () => values.first),
+              );
             },
             overlayBuilder: (context, constraints) {
               return Stack(
@@ -271,16 +347,31 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                               letterSpacing: 1.5,
                             ),
                           ),
-                        _ScanState.validDetected => const Text(
-                            'Spotify\'a bağlanıyor...',
-                            key: ValueKey('valid'),
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: JamTimeColors.cyan,
-                              fontSize: 18,
-                              fontWeight: FontWeight.w500,
-                              letterSpacing: 1.5,
-                            ),
+                        _ScanState.validDetected => Column(
+                            key: const ValueKey('valid'),
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text(
+                                'Spotify\'a bağlanıyor...',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: JamTimeColors.cyan,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w500,
+                                  letterSpacing: 1.5,
+                                ),
+                              ),
+                              // Kacinilmaz Spotify gecisini onceden acikla.
+                              if (_hopHint)
+                                const Padding(
+                                  padding: EdgeInsets.only(top: 6),
+                                  child: Text(
+                                    'Spotify kısa süre açılabilir.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(color: Colors.white54, fontSize: 13),
+                                  ),
+                                ),
+                            ],
                           ),
                         _ScanState.invalidDetected => Text(
                             _connectFailed
@@ -298,28 +389,45 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                     ),
                   ),
 
-                  // Ayni kart kilidi: az once calan kart otomatik tekrar calmaz;
-                  // bilincli tekrar icin acik aksiyon — sadece kilitli kart tekrar
-                  // algilandiktan sonra. Normal taramada ekran bundan bos kalir.
-                  if (_lockedCode != null &&
-                      _sameCardSeen &&
-                      _scanState == _ScanState.idle)
+                  // Bilincli eylemler (sadece bosta iken):
+                  //  - "Yeniden bağla": son deneme basarisiz oldu (interaktif, 90 sn).
+                  //  - "Aynı kartı tekrar tara": kilitli kart tekrar algilandi; az
+                  //    once calan veya calamayan kart otomatik tekrar denenmez.
+                  // Normal taramada ekran bunlardan bos kalir.
+                  if (_scanState == _ScanState.idle &&
+                      (_needsReconnect || _seenLockedCode != null))
                     Positioned(
                       top: scanWindow.bottom + 72,
                       left: 0,
                       right: 0,
-                      child: Center(
-                        child: TextButton(
-                          onPressed: _unlockSameCard,
-                          child: const Text(
-                            'Aynı kartı tekrar tara',
-                            style: TextStyle(
-                              color: JamTimeColors.cyan,
-                              fontSize: 14,
-                              letterSpacing: 1,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_needsReconnect)
+                            TextButton(
+                              onPressed: _reconnectInteractively,
+                              child: const Text(
+                                'Yeniden bağla',
+                                style: TextStyle(
+                                  color: JamTimeColors.cyan,
+                                  fontSize: 14,
+                                  letterSpacing: 1,
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
+                          if (_seenLockedCode != null)
+                            TextButton(
+                              onPressed: _unlockSameCard,
+                              child: const Text(
+                                'Aynı kartı tekrar tara',
+                                style: TextStyle(
+                                  color: JamTimeColors.cyan,
+                                  fontSize: 14,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                 ],

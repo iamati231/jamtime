@@ -5,12 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jamtime/features/auth/spotify_auth_service.dart';
+import 'package:jamtime/features/auth/spotify_connection_monitor.dart';
 import 'package:jamtime/features/player_mode/song_mode_screen.dart';
 import 'package:jamtime/features/scanner/qr_handler.dart';
 import 'package:jamtime/features/scanner/scan_overlay_painter.dart';
 import 'package:jamtime/features/scanner/scanner_screen.dart';
 import 'package:jamtime/features/scanner/track_whitelist.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // Regression: on iOS the spotify_sdk plugin can NEVER answer play/pause/connect
 // (playerAPI is nil -> no callback). The awaits had no timeout, so ScannerScreen
@@ -41,6 +43,8 @@ const _songModeStopLabel = 'Durdur ve çık';
 const _rescanLabel = 'Durdur ve yeniden tara';
 const _sameCardLabel = 'Aynı kartı tekrar tara';
 const _pauseHint = "Müzik durmamış olabilir. Gerekirse Spotify'dan durdurun.";
+const _reconnectLabel = 'Yeniden bağla';
+const _hopHintLabel = 'Spotify kısa süre açılabilir.';
 
 // ─── Timing (fake time) ─────────────────────────────────────────────────────────
 // playTrack: play (play timeout), then ONE reconnect (reconnect timeout). Both come
@@ -179,16 +183,20 @@ class _Device {
 
   /// The platform reports a detected QR code (what iOS pushes into the camera
   /// event stream). Dropped silently if nobody listens, like the real thing.
-  void detect(String rawValue) {
+  void detect(String rawValue) => detectMany(<String>[rawValue]);
+
+  /// Several codes in ONE frame, in the order the platform lists them.
+  void detectMany(List<String> rawValues) {
     final event = <String, Object?>{
       'name': 'barcode',
       'data': <Object?>[
-        <String, Object?>{
-          'rawValue': rawValue,
-          'displayValue': rawValue,
-          'format': 256, // BarcodeFormat.qrCode
-          'type': 8, // BarcodeType.url
-        },
+        for (final rawValue in rawValues)
+          <String, Object?>{
+            'rawValue': rawValue,
+            'displayValue': rawValue,
+            'format': 256, // BarcodeFormat.qrCode
+            'type': 8, // BarcodeType.url
+          },
       ],
     };
     unawaited(
@@ -375,6 +383,15 @@ Color _frameColor(WidgetTester tester) {
 }
 
 void main() {
+  setUp(() async {
+    SpotifyAuthService.debugReset();
+    // The original bug: the app believes the connection is up, but the SDK stops
+    // answering. (A KNOWN "disconnected" state skips the first play; tests for that
+    // set the state explicitly.)
+    await SpotifyConnectionMonitor.debugReset(to: SpotifyLink.connected);
+    SharedPreferences.setMockInitialValues(<String, Object>{}); // setup marker writes
+  });
+
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
     await TrackWhitelist.load();
@@ -446,9 +463,11 @@ void main() {
       await _elapse(tester, _fade);
       expect(find.text(_idleLabel), findsOneWidget, reason: 'did not recover');
 
-      // Spotify is reachable now. The user holds the card up again.
+      // Spotify is reachable now. The user shows ANOTHER card: it is accepted at once.
+      // (The failed card stays locked until the user asks for it explicitly, see the
+      // group "after a failed play: no reconnect loop, explicit retry".)
       device.sdk = (call) async => call.method == 'play' ? true : null;
-      device.detect(_whitelistedUrl);
+      device.detect(_otherWhitelistedUrl);
       await _elapse(tester, _tick);
       await _elapse(tester, const Duration(seconds: 1)); // page transition
 
@@ -952,8 +971,9 @@ void main() {
     });
 
     // Another card is accepted: the earlier sighting of the locked card is history.
-    // If that card then fails, the offer must not pop up again by itself.
-    _iosTest('after another card was tried, the offer needs a new sighting of the locked card',
+    // If that card then fails it is locked as well (the failed card must not start a
+    // reconnect loop), and the old offer must not pop up again by itself.
+    _iosTest('after another card failed, that card is locked too and needs a new sighting',
         (tester) async {
       final plays = <String>[];
       final device = await rescanAfterPlayingA(tester, plays: plays);
@@ -966,15 +986,17 @@ void main() {
       await _elapse(tester, _tick);
       expect(find.text(_connectingLabel), findsOneWidget);
       expect(find.text(_sameCardLabel), findsNothing);
+      final playsBefore = device.sdkCount('play');
 
       await _elapse(tester, _giveUpAfter + _labelHold + const Duration(seconds: 1));
       await _elapse(tester, _fade);
       expect(find.text(_idleLabel), findsOneWidget, reason: 'recovered');
       expect(find.text(_sameCardLabel), findsNothing, reason: 'the old sighting is gone');
 
-      device.detect(_whitelistedUrl); // the locked card shows up again
+      device.detect(_otherWhitelistedUrl); // B is still in view: it is the locked card now
       await _elapse(tester, _cadence);
-      expect(find.text(_sameCardLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsOneWidget, reason: 'B seen again: offer');
+      expect(device.sdkCount('play'), playsBefore, reason: 'and B is not retried by itself');
     });
 
     _iosTest('a long silence is NOT read as "card removed"', (tester) async {
@@ -990,6 +1012,113 @@ void main() {
 
       expect(plays, ['A'], reason: 'still locked after a long gap in the callbacks');
       expect(find.byType(ScannerScreen), findsOneWidget);
+    });
+
+    // "Yeniden bağla" frees the cards that FAILED; the card that just played (the lock
+    // this scanner was opened with) stays locked.
+    _iosTest('a successful "Yeniden bağla" frees the failed card but not the just-played one',
+        (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays); // locked on A
+      expect(plays, ['A']);
+
+      device.sdk = (_) => _silent(); // Spotify stops answering: card B fails
+      device.detect(_otherWhitelistedUrl);
+      await _elapse(tester, _tick);
+      await _elapse(tester, _giveUpAfter + _labelHold + const Duration(seconds: 1));
+      await _elapse(tester, _fade);
+      expect(find.text(_reconnectLabel), findsOneWidget);
+
+      final connects = <Completer<Object?>>[];
+      device.sdk = (call) {
+        if (call.method == 'connectToSpotify') {
+          final answer = Completer<Object?>();
+          connects.add(answer);
+          return answer.future;
+        }
+        return Future<Object?>.value(true); // play, pause
+      };
+      await tester.tap(find.text(_reconnectLabel));
+      await _elapse(tester, _tick);
+      connects.single.complete(true);
+      await _elapse(tester, _tick);
+      await _elapse(tester, const Duration(seconds: 3));
+      expect(find.text(_idleLabel), findsOneWidget);
+      final playsBefore = device.sdkCount('play');
+
+      device.detect(_whitelistedUrl); // A: still locked (it just played)
+      await _elapse(tester, _cadence);
+      expect(device.sdkCount('play'), playsBefore, reason: 'A is not replayed by itself');
+      expect(find.text(_sameCardLabel), findsOneWidget, reason: 'seen again: explicit retry');
+
+      await _scanUntilSongMode(tester, device, _otherWhitelistedUrl); // B was freed
+      expect(device.sdkCount('play'), playsBefore + 1);
+    });
+
+    // The platform lists the codes of a frame in some order and the app looks at them in
+    // that order: a locked card listed first must not hide another card in the same frame.
+    _iosTest('a locked card listed first does not hide another card in the same frame',
+        (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays); // locked on A
+
+      device.detectMany([_whitelistedUrl, _otherWhitelistedUrl]); // A (locked) first, then B
+      await _elapse(tester, _tick);
+      await _elapse(tester, const Duration(seconds: 1));
+
+      expect(find.text(_songModeStopLabel), findsOneWidget, reason: 'B was accepted');
+      expect(plays, ['A', 'B']);
+    });
+
+    _iosTest('when every code in the frame is locked, the sighting still counts', (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays);
+
+      device.detectMany([_whitelistedUrl]);
+      await _elapse(tester, _cadence);
+
+      expect(plays, ['A']);
+      expect(find.text(_sameCardLabel), findsOneWidget);
+    });
+
+    // A card that was released on purpose and then FAILED is a failed card like any
+    // other: "Yeniden bağla" frees it, even though it equals the card this scanner was
+    // opened with.
+    _iosTest('"Yeniden bağla" frees a failed card that equals the card the scanner was opened with',
+        (tester) async {
+      final plays = <String>[];
+      final device = await rescanAfterPlayingA(tester, plays: plays); // locked on A
+
+      device.detect(_whitelistedUrl); // seen again ...
+      await _elapse(tester, _cadence);
+      await tester.tap(find.text(_sameCardLabel)); // ... and released on purpose
+      await _elapse(tester, _tick);
+
+      device.sdk = (_) => _silent(); // Spotify stops answering: A fails
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _tick);
+      await _elapse(tester, _giveUpAfter + _labelHold + const Duration(seconds: 1));
+      await _elapse(tester, _fade);
+      expect(find.text(_reconnectLabel), findsOneWidget);
+
+      final connects = <Completer<Object?>>[];
+      device.sdk = (call) {
+        if (call.method == 'connectToSpotify') {
+          final answer = Completer<Object?>();
+          connects.add(answer);
+          return answer.future;
+        }
+        return Future<Object?>.value(true);
+      };
+      await tester.tap(find.text(_reconnectLabel));
+      await _elapse(tester, _tick);
+      connects.single.complete(true);
+      await _elapse(tester, _tick);
+      await _elapse(tester, const Duration(seconds: 3));
+      final playsBefore = device.sdkCount('play');
+
+      await _scanUntilSongMode(tester, device, _whitelistedUrl); // A is free again
+      expect(device.sdkCount('play'), playsBefore + 1);
     });
 
     _iosTest('another valid card plays immediately while the lock is active',
@@ -1080,6 +1209,296 @@ void main() {
           r'scan accepted lastConn=\w+\([^)]*\) lastLifecycle=\S+\([^)]*\)$');
       expect(lines.where(accepted.hasMatch), isNotEmpty,
           reason: 'known connection state + age at every accepted scan');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // A failed play locks the card: a QR that stays in view must not start an endless
+  // reconnect cycle (each one opens Spotify). Retrying is a deliberate action.
+  // ─────────────────────────────────────────────────────────────────────────────
+  group('after a failed play: no reconnect loop, explicit retry', () {
+    /// Scanner is the home screen, the SDK never answers: card A is shown, fails, the
+    /// failure label goes away and the scanner is idle again (locked on A).
+    Future<_Device> failedPlayOfA(WidgetTester tester) async {
+      final device = await _openScanner(tester);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _tick);
+      await _elapse(tester, _giveUpAfter + const Duration(seconds: 1));
+      expect(find.text(_connectFailedLabel), findsOneWidget);
+      await _elapse(tester, _labelHold);
+      await _elapse(tester, _fade);
+      expect(find.text(_idleLabel), findsOneWidget, reason: 'recovered');
+      return device;
+    }
+
+    _iosTest('a card that stays in view after a failed play starts no further reconnect',
+        (tester) async {
+      final device = await _openScanner(tester);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _tick);
+
+      // The card never leaves the view: through connecting, the failure label, the
+      // camera restart ...
+      final busyUntil = _giveUpAfter + _labelHold + const Duration(seconds: 12);
+      for (var t = _tick; t < busyUntil; t += _cadence) {
+        device.detect(_whitelistedUrl);
+        await _elapse(tester, _cadence);
+      }
+      // ... and two more minutes (one sighting every 5 s).
+      for (var i = 0; i < 24; i++) {
+        device.detect(_whitelistedUrl);
+        await _elapse(tester, const Duration(seconds: 5));
+      }
+
+      expect(device.sdkCount('play'), 1, reason: 'the visible card is not retried by itself');
+      expect(device.sdkCount('connectToSpotify'), 1, reason: 'and Spotify is not opened again');
+      expect(find.text(_idleLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsOneWidget,
+          reason: 'seen again: the explicit retry is offered');
+    });
+
+    // onDetect takes the FIRST code of each frame, so two cards in view can alternate.
+    // Each failed card is locked for good (a set, not one code): they must not unlock
+    // each other, otherwise A and B would keep opening Spotify without any user action.
+    _iosTest('two cards in view alternate without unlocking each other: one attempt per card',
+        (tester) async {
+      final device = await _openScanner(tester); // the SDK never answers
+      var flip = false;
+      String next() => (flip = !flip) ? _whitelistedUrl : _otherWhitelistedUrl;
+
+      device.detect(next());
+      await _elapse(tester, _tick);
+      // Both cards stay in the scan window (alternating, 4 sightings per second):
+      // through card 1's attempt and failure, card 2's attempt and failure ...
+      final busyUntil = (_giveUpAfter + _labelHold) * 2 + const Duration(seconds: 12);
+      for (var t = _tick; t < busyUntil; t += _cadence) {
+        device.detect(next());
+        await _elapse(tester, _cadence);
+      }
+      // ... and two more minutes (one sighting every 5 s).
+      for (var i = 0; i < 24; i++) {
+        device.detect(next());
+        await _elapse(tester, const Duration(seconds: 5));
+      }
+
+      expect(device.sdkCount('play'), 2, reason: 'one play per card, never a third');
+      expect(device.sdkCount('connectToSpotify'), 2, reason: 'one reconnect per card');
+      expect(find.text(_idleLabel), findsOneWidget);
+      expect(find.text(_sameCardLabel), findsOneWidget, reason: 'a locked card was seen again');
+    });
+
+    _iosTest('the explicit action unlocks only the card that was seen, not the other one',
+        (tester) async {
+      final device = await _openScanner(tester);
+      // Card A fails, then card B fails: both locked.
+      for (final url in [_whitelistedUrl, _otherWhitelistedUrl]) {
+        device.detect(url);
+        await _elapse(tester, _tick);
+        await _elapse(tester, _giveUpAfter + const Duration(seconds: 1));
+        await _elapse(tester, _labelHold);
+        await _elapse(tester, _fade);
+        expect(find.text(_idleLabel), findsOneWidget, reason: 'recovered');
+      }
+      final playsBefore = device.sdkCount('play');
+      expect(playsBefore, 2);
+
+      // Card B is seen and unlocked on purpose. A stays locked.
+      device.sdk = (call) async => true; // Spotify works again
+      device.detect(_otherWhitelistedUrl);
+      await _elapse(tester, _cadence);
+      await tester.tap(find.text(_sameCardLabel));
+      await _elapse(tester, _tick);
+      device.detect(_whitelistedUrl); // A: still locked -> ignored
+      await _elapse(tester, _cadence);
+      expect(device.sdkCount('play'), playsBefore, reason: 'A was not unlocked');
+
+      await _scanUntilSongMode(tester, device, _otherWhitelistedUrl); // B plays now
+      expect(device.sdkCount('play'), playsBefore + 1);
+    });
+
+    _iosTest('"Aynı kartı tekrar tara" retries the failed card on purpose', (tester) async {
+      final device = await failedPlayOfA(tester);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _cadence);
+      expect(find.text(_sameCardLabel), findsOneWidget);
+      final playsBefore = device.sdkCount('play');
+
+      device.sdk = (call) async => true; // Spotify works again
+      await tester.tap(find.text(_sameCardLabel));
+      await _elapse(tester, _tick);
+      await _scanUntilSongMode(tester, device, _whitelistedUrl);
+      expect(device.sdkCount('play'), playsBefore + 1);
+    });
+
+    _iosTest('another card is accepted at once after a failed play', (tester) async {
+      final device = await failedPlayOfA(tester);
+      final plays = <String>[];
+      _answerSdk(device, plays: plays); // Spotify works again
+      await _scanUntilSongMode(tester, device, _otherWhitelistedUrl);
+      expect(plays, ['B']);
+    });
+
+    // ── "Yeniden bağla": deliberate, interactive reconnect (login limit 90 s) ──────
+    _iosTest('"Yeniden bağla" is offered only after a failed play', (tester) async {
+      final device = await _openScanner(tester);
+      expect(find.text(_reconnectLabel), findsNothing);
+
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _tick);
+      expect(find.text(_reconnectLabel), findsNothing, reason: 'not while connecting');
+
+      await _elapse(tester, _giveUpAfter + _labelHold + const Duration(seconds: 1));
+      await _elapse(tester, _fade);
+      expect(find.text(_idleLabel), findsOneWidget);
+      expect(find.text(_reconnectLabel), findsOneWidget);
+    });
+
+    _iosTest('"Yeniden bağla" waits longer than the automatic reconnect, then the card plays',
+        (tester) async {
+      final device = await failedPlayOfA(tester);
+      final connects = <Completer<Object?>>[];
+      device.sdk = (call) {
+        if (call.method == 'connectToSpotify') {
+          final answer = Completer<Object?>();
+          connects.add(answer);
+          return answer.future;
+        }
+        return Future<Object?>.value(true); // play, pause
+      };
+      final connectsBefore = device.sdkCount('connectToSpotify');
+
+      await tester.tap(find.text(_reconnectLabel));
+      await _elapse(tester, _tick);
+      expect(find.text(_connectingLabel), findsOneWidget);
+      expect(find.text(_hopHintLabel), findsOneWidget);
+      expect(device.sdkCount('connectToSpotify'), connectsBefore + 1);
+
+      // Just past the automatic scan reconnect limit (15 s) and still waiting.
+      await _elapse(tester, _connectTimeout + const Duration(seconds: 1));
+      expect(find.text(_connectingLabel), findsOneWidget, reason: 'interactive: login limit');
+
+      connects.single.complete(true);
+      await _elapse(tester, _tick);
+      await _elapse(tester, const Duration(seconds: 3)); // pause(after connect) answers
+      expect(find.text(_idleLabel), findsOneWidget);
+      expect(find.text(_reconnectLabel), findsNothing, reason: 'reconnected: action is gone');
+
+      // The failed card is released by the deliberate reconnect: the card in view plays.
+      await _scanUntilSongMode(tester, device, _whitelistedUrl);
+    });
+
+    _iosTest('"Yeniden bağla" gives up at the login limit and stays available',
+        (tester) async {
+      final device = await failedPlayOfA(tester); // the SDK keeps being silent
+      final connectsBefore = device.sdkCount('connectToSpotify');
+
+      await tester.tap(find.text(_reconnectLabel));
+      await _elapse(tester, _tick);
+      await _elapse(tester, SpotifyAuthService.loginTimeout - const Duration(seconds: 1));
+      expect(find.text(_connectingLabel), findsOneWidget);
+      expect(device.sdkCount('connectToSpotify'), connectsBefore + 1);
+
+      await _elapse(tester, const Duration(seconds: 2));
+      expect(find.text(_connectFailedLabel), findsOneWidget);
+      await _elapse(tester, _labelHold + _fade);
+      expect(find.text(_idleLabel), findsOneWidget);
+      expect(find.text(_reconnectLabel), findsOneWidget, reason: 'still available');
+    });
+
+    _iosTest('leaving while "Yeniden bağla" connects: the late result is ignored', (tester) async {
+      final device = await _installHome(tester);
+      await _openScannerFromHome(tester);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _tick);
+      await _elapse(tester, _giveUpAfter + _labelHold + const Duration(seconds: 1));
+      await _elapse(tester, _fade);
+      expect(find.text(_reconnectLabel), findsOneWidget);
+
+      final connects = <Completer<Object?>>[];
+      device.sdk = (call) {
+        if (call.method == 'connectToSpotify') {
+          final answer = Completer<Object?>();
+          connects.add(answer);
+          return answer.future;
+        }
+        return Future<Object?>.value(true);
+      };
+      await tester.tap(find.text(_reconnectLabel));
+      await _elapse(tester, _tick);
+      expect(connects, hasLength(1));
+
+      await _leaveScanner(tester); // back to Home while Spotify is still being asked
+      connects.single.complete(true); // ... and Spotify answers late
+      await _elapse(tester, _tick);
+      await _elapse(tester, const Duration(seconds: 3));
+
+      expect(find.text(_openLabel), findsOneWidget, reason: 'still on Home');
+      expect(find.text(_songModeStopLabel), findsNothing);
+    });
+
+    _iosTest('cards shown while "Yeniden bağla" connects are ignored', (tester) async {
+      final device = await failedPlayOfA(tester);
+      final connects = <Completer<Object?>>[];
+      device.sdk = (call) {
+        if (call.method == 'connectToSpotify') {
+          final answer = Completer<Object?>();
+          connects.add(answer);
+          return answer.future;
+        }
+        return Future<Object?>.value(true);
+      };
+      final playsBefore = device.sdkCount('play');
+
+      await tester.tap(find.text(_reconnectLabel));
+      await _elapse(tester, _tick);
+      for (var i = 0; i < 8; i++) {
+        device.detect(_otherWhitelistedUrl);
+        await _elapse(tester, _cadence);
+      }
+      expect(device.sdkCount('play'), playsBefore, reason: 'no play while connecting');
+      expect(connects, hasLength(1), reason: 'and no second connect');
+
+      connects.single.complete(true); // finish cleanly
+      await _elapse(tester, _tick);
+      await _elapse(tester, const Duration(seconds: 3));
+    });
+
+    // ── The unavoidable Spotify switch is announced ─────────────────────────────────
+    _iosTest('the hint "Spotify kısa süre açılabilir." shows while connecting when the link is down',
+        (tester) async {
+      await SpotifyConnectionMonitor.debugReset(); // fresh process: no connection
+      final device = await _openScanner(tester);
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _tick);
+      expect(find.text(_connectingLabel), findsOneWidget);
+      expect(find.text(_hopHintLabel), findsOneWidget);
+
+      await _elapse(tester, _connectTimeout + _labelHold + const Duration(seconds: 1)); // drain
+    });
+
+    _iosTest('no hint when the connection is known to be up', (tester) async {
+      final device = await _openScanner(tester); // default in these tests: connected
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _tick);
+      expect(find.text(_connectingLabel), findsOneWidget);
+      expect(find.text(_hopHintLabel), findsNothing);
+
+      await _elapse(tester, _giveUpAfter + _labelHold + const Duration(seconds: 1)); // drain
+    });
+
+    _iosTest('link known to be down: the scan connects first and plays right after',
+        (tester) async {
+      await SpotifyConnectionMonitor.debugReset();
+      final device = await _openScanner(tester);
+      device.sdk = (call) async => true;
+
+      device.detect(_whitelistedUrl);
+      await _elapse(tester, _tick);
+      await _elapse(tester, const Duration(seconds: 1)); // page transition
+
+      expect(device.sdkCalls, ['connectToSpotify', 'play'],
+          reason: 'no doomed first play; the reconnect does not pause');
+      expect(find.text(_songModeStopLabel), findsOneWidget);
     });
   });
 }

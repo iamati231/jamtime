@@ -1,10 +1,19 @@
 import 'package:flutter/material.dart';
 import '../../config/jamtime_colors.dart';
+import 'open_spotify.dart';
 import 'spotify_auth_service.dart';
 import '../home/home_screen.dart';
 
 class AuthScreen extends StatefulWidget {
-  const AuthScreen({super.key});
+  const AuthScreen({super.key, this.switchAccount = false, this.onOpenSpotify});
+
+  /// "Spotify hesabini degistir" akisinin ikinci adimi: yerel kurulum silindi, bu
+  /// ekran kullaniciyi Spotify'da hesabi degistirmeye yonlendirir. Hesabi uygulama
+  /// secemez: JamTime Spotify uygulamasinda acik olan hesabi kullanir.
+  final bool switchAccount;
+
+  /// Sadece testler icin. Varsayilan: Spotify uygulamasini ac.
+  final Future<bool> Function()? onOpenSpotify;
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -15,6 +24,7 @@ class _AuthScreenState extends State<AuthScreen> {
   String? _errorMessage;
 
   Future<void> _connect() async {
+    if (_isConnecting) return;
     setState(() {
       _isConnecting = true;
       _errorMessage = null;
@@ -37,28 +47,46 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
+  Future<void> _openSpotify() async {
+    final opened = await (widget.onOpenSpotify ?? openSpotifyApp)();
+    if (!mounted || opened) return;
+    setState(() => _errorMessage = 'Spotify uygulaması bulunamadı.');
+  }
+
   @override
   Widget build(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
     return Scaffold(
       backgroundColor: JamTimeColors.background,
       body: SafeArea(
         child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Image.asset(
                   'assets/images/logo.png',
-                  width: MediaQuery.of(context).size.width * 0.9,
+                  width: width * (widget.switchAccount ? 0.5 : 0.9),
                 ),
-                const SizedBox(height: 48),
+                SizedBox(height: widget.switchAccount ? 24 : 48),
+                if (widget.switchAccount) ...[
+                  _SwitchAccountGuide(onOpenSpotify: _openSpotify),
+                  const SizedBox(height: 24),
+                ],
                 if (_isConnecting)
                   const CircularProgressIndicator(
                     valueColor: AlwaysStoppedAnimation(JamTimeColors.cyan),
                   )
                 else
                   _SpotifyButton(onPressed: _connect),
+                const SizedBox(height: 16),
+                // Kacinilmaz Spotify gecisini onceden acikla (iOS'ta Spotify acilir).
+                const Text(
+                  'Bağlanırken Spotify kısa süre açılabilir.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white54, fontSize: 13),
+                ),
                 if (_errorMessage != null) ...[
                   const SizedBox(height: 24),
                   Text(
@@ -74,6 +102,65 @@ class _AuthScreenState extends State<AuthScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Hesap degistirme yonlendirmesi: hesabi Spotify uygulamasinda degistir, geri don,
+/// yeniden bagla.
+class _SwitchAccountGuide extends StatelessWidget {
+  final VoidCallback onOpenSpotify;
+
+  const _SwitchAccountGuide({required this.onOpenSpotify});
+
+  @override
+  Widget build(BuildContext context) {
+    const body = TextStyle(color: Colors.white70, fontSize: 14, height: 1.4);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border.all(color: JamTimeColors.cyan.withValues(alpha: 0.5)),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Spotify hesabını değiştir',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'JamTime, Spotify uygulamasında açık olan hesabı kullanır.',
+            style: body,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            '1. Spotify\'ı aç ve hesabını değiştir (çıkış yap, diğer hesapla giriş yap).',
+            style: body,
+          ),
+          const Text('2. Buraya dön.', style: body),
+          const Text('3. "Spotify ile Bağlan"a dokun.', style: body),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: onOpenSpotify,
+            icon: const Icon(Icons.open_in_new, size: 16, color: JamTimeColors.cyan),
+            label: const Text(
+              'Spotify\'ı aç',
+              style: TextStyle(color: JamTimeColors.cyan, letterSpacing: 1),
+            ),
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: JamTimeColors.cyan, width: 1),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -101,13 +188,16 @@ class _SpotifyButton extends StatelessWidget {
           children: [
             Icon(Icons.headphones, color: Colors.white, size: 20),
             SizedBox(width: 10),
-            Text(
-              'Spotify ile Bağlan',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1,
+            // Flexible: grosse Yazi boyutunda (Dynamic Type) satir kirilir, tasmaz.
+            Flexible(
+              child: Text(
+                'Spotify ile Bağlan',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1,
+                ),
               ),
             ),
           ],

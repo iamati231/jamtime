@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'config/jamtime_colors.dart';
-import 'features/auth/auth_screen.dart';
+import 'features/start/start_gate.dart';
 
 class JamTimeApp extends StatelessWidget {
   const JamTimeApp({super.key});
@@ -18,7 +18,7 @@ class JamTimeApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const AuthScreen(),
+      home: const StartGate(),
     );
   }
 }

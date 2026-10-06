@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jamtime/features/auth/spotify_auth_service.dart';
+import 'package:jamtime/features/auth/spotify_connection_monitor.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // Regression: das iOS-Plugin von spotify_sdk ruft bei play/pause/connect unter
 // Umstaenden NIE einen Callback auf (appRemote.playerAPI?.… ohne else-Zweig).
@@ -35,6 +37,15 @@ void _mockSdk(Future<Object?>? Function(MethodCall call) handler) {
 }
 
 void main() {
+  setUp(() async {
+    SpotifyAuthService.debugReset();
+    // Der erste play wird nur bei BEKANNT "getrennt" uebersprungen. Diese Tests
+    // beschreiben eine Verbindung, die die App fuer aktiv haelt, die aber nicht mehr
+    // antwortet (der urspruengliche iOS-Haenger).
+    await SpotifyConnectionMonitor.debugReset(to: SpotifyLink.connected);
+    SharedPreferences.setMockInitialValues(<String, Object>{}); // Kurzzeit-Marker
+  });
+
   group('pause()', () {
     testWidgets('returns after the timeout when the SDK never answers',
         (tester) async {

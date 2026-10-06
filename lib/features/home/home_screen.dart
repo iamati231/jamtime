@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../config/jamtime_colors.dart';
 import '../scanner/scanner_screen.dart';
+import 'spotify_sheet.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -10,23 +11,42 @@ class HomeScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: JamTimeColors.background,
       body: SafeArea(
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Image.asset(
-                'assets/images/logo.png',
-                width: MediaQuery.of(context).size.width * 0.9,
-              ),
-              const SizedBox(height: 48),
-              _GradientButton(
-                label: 'QR Tara',
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const ScannerScreen()),
+        child: Stack(
+          children: [
+            // Spotify menusu: durum + "Baglantiyi kes" / "Hesabi degistir"
+            Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: TextButton.icon(
+                  onPressed: () => showSpotifySheet(context),
+                  icon: const Icon(Icons.headphones, size: 18, color: Colors.white54),
+                  label: const Text(
+                    'Spotify',
+                    style: TextStyle(color: Colors.white54, letterSpacing: 1),
+                  ),
                 ),
               ),
-            ],
-          ),
+            ),
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Image.asset(
+                    'assets/images/logo.png',
+                    width: MediaQuery.of(context).size.width * 0.9,
+                  ),
+                  const SizedBox(height: 48),
+                  _GradientButton(
+                    label: 'QR Tara',
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const ScannerScreen()),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
